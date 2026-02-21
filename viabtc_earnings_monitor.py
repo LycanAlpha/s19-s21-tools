@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 # ===== CONFIG =====
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
-COOKIE = "lang=en_US; token=c8a8cb2eeffb088a67e5d7e1178940b5; currency=USD; timezone=local"
+COOKIE = "lang=en_US; token=xxx; currency=USD; timezone=local"
 
 from dotenv import load_dotenv
 load_dotenv("C:/Users/YoungWolf/Documents/.env")
