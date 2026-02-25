@@ -18,8 +18,8 @@ IMG_PATH = "block_card_final.png"
 BG_DIR = "block_tier_backgrounds"
 API_URL = "https://www.viabtc.com/res/pool/BTC/block?page=1&limit=50"
 
-PPS_BASELINE = 0.0001992
-PPLNS_PER_BLOCK = 0.0000125
+PPS_BASELINE = 0.00016800
+PPLNS_PER_BLOCK = 0.00001380
 
 
 # ===== LAST BLOCK STORAGE =====
