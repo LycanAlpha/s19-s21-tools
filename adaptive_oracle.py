@@ -11,7 +11,7 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 USER_AGENT = "Mozilla/5.0"
-COOKIE = "lang=en_US; token=c8a8cb2eeffb088a67e5d7e1178940b5; currency=USD; timezone=local"
+COOKIE = "lang=en_US; token=-; currency=USD; timezone=local"
 
 BLOCK_API = "https://www.viabtc.com/res/pool/BTC/block?page=1&limit=100"
 PAYOUT_API = "https://www.viabtc.com/res/profit/BTC/pplns?page=1&limit=50"
@@ -106,4 +106,5 @@ if __name__ == "__main__":
         send_message(message)
 
     except Exception as e:
+
         send_message(f"Adaptive Oracle error: {e}")
