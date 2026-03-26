@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-import requests, os, time, logging
+import logging
+import os
+import time
+
+import requests
 from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler
 
 # ===== STARTUP GUARD =====
 load_dotenv("C:/Users/YoungWolf/Documents/.env")
@@ -18,7 +21,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# ===== CONSTANTS & PATHS =====
+# ===== CONSTANTS =====
 EXPECTED_BLOCKS_24H = 13.4      
 PPS_BASELINE = 0.0001796        
 MY_SHARE_PER_BLOCK = 0.00001340 
@@ -26,107 +29,155 @@ DR_PEPPER_EUR = 1.30
 
 PRICE_CACHE_FILE = "C:/Users/YoungWolf/Documents/last_known_price.txt"
 GACHA_LOG = "C:/Users/YoungWolf/Documents/gacha_history.txt"
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36"}
 
 BINANCE_URL = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
 BLOCK_API = "https://www.viabtc.com/res/pool/BTC/block?page=1&limit=100"
 POOL_API = "https://www.viabtc.com/res/pool/BTC/state"
+FOUNDRY_API = "https://mempool.space/api/v1/mining/pool/foundryusa"
 
 # ===== HELPERS =====
 
 def safe_int(val, default=0):
     try: return int(float(val))
-    except (ValueError, TypeError): return default
+    except: return default
+
+def log_api_error(label, exc):
+    logging.error("%s failed: %s", label, exc)
 
 def get_cached_price():
     try:
         if os.path.exists(PRICE_CACHE_FILE):
             with open(PRICE_CACHE_FILE, "r") as f:
                 return float(f.read().strip())
-    except: pass
+    except Exception as exc:
+        log_api_error("Price cache read", exc)
     return 64000.0
 
-def log_gacha(stars, speed):
+def save_cached_price(price):
     try:
-        with open(GACHA_LOG, "a") as f:
-            f.write(f"{time.time()}|{stars}|{speed}\n")
-    except: pass
+        with open(PRICE_CACHE_FILE, "w") as f:
+            f.write(str(price))
+    except Exception as exc:
+        log_api_error("Price cache write", exc)
+
+def fetch_json(url, label, timeout=10):
+    response = requests.get(url, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
 
 def fetch_all_data():
-    results = {"blocks": [], "pool": {"hashrate": "94000000000000000000"}, "price": get_cached_price(), "errors": []}
+    cached_price = get_cached_price()
+    results = {
+        "blocks": [],
+        "pool": {"hashrate": "94000000000000000000"},
+        "price": cached_price,
+        "errors": [],
+        "price_source": "cache",
+    }
     
-    # 1. Price Engine (Binance)
     try:
-        r = requests.get(BINANCE_URL, timeout=5)
-        results["price"] = float(r.json()["price"])
-        with open(PRICE_CACHE_FILE, "w") as f: f.write(str(results["price"]))
-    except Exception: results["errors"].append("Price API")
+        price_data = fetch_json(BINANCE_URL, "Price API", timeout=5)
+        results["price"] = float(price_data["price"])
+        results["price_source"] = "live"
+        save_cached_price(results["price"])
+    except Exception as exc:
+        results["errors"].append("Price API")
+        log_api_error("Price API", exc)
 
-    # 2. Pool Data
     try:
-        r = requests.get(POOL_API, headers=HEADERS, timeout=10)
-        results["pool"] = r.json().get("data", results["pool"])
-    except Exception: results["errors"].append("Pool API")
+        pool_data = fetch_json(POOL_API, "Pool API", timeout=10)
+        results["pool"] = pool_data.get("data", results["pool"])
+    except Exception as exc:
+        results["errors"].append("Pool API")
+        log_api_error("Pool API", exc)
 
-    # 3. Block Data
     try:
-        r2 = requests.get(BLOCK_API, headers=HEADERS, timeout=10)
-        results["blocks"] = r2.json().get("data", {}).get("data", [])
-    except Exception: results["errors"].append("Blocks API")
+        block_data = fetch_json(BLOCK_API, "Blocks API", timeout=10)
+        results["blocks"] = block_data.get("data", {}).get("data", [])
+    except Exception as exc:
+        results["errors"].append("Blocks API")
+        log_api_error("Blocks API", exc)
 
     return results
 
-# ===== COMMAND HANDLERS =====
+def get_foundry_data():
+    results = {
+        "share_24h": None,
+        "share_1w": None,
+        "blocks_24h": None,
+        "error": None,
+    }
+
+    try:
+        data = fetch_json(FOUNDRY_API, "Foundry API", timeout=10)
+        results["share_24h"] = data["blockShare"]["24h"] * 100
+        results["share_1w"] = data["blockShare"]["1w"] * 100
+        results["blocks_24h"] = data["blockCount"]["24h"]
+    except Exception as exc:
+        results["error"] = "Foundry API"
+        log_api_error("Foundry API", exc)
+
+    return results
+
+# ===== COMMANDS =====
 
 async def start_command(update, context):
     msg = (
-        "🐺 **Mining Oracle V9.9**\n"
-        "Balcony Fleet Management System.\n\n"
-        "📜 **Commands:**\n"
-        "/oracle - Detailed luck & profit 🥤\n"
-        "/pull - Block Gacha 🎲\n"
-        "/top - 24h Leaderboard 🏆\n"
-        "/fleet - Balcony Status 🐺\n"
-        "/price - Live BTC ticker 💸\n"
-        "/hype - Heat check 🔥"
+        "🐺 Mining Oracle\n\n"
+        "/oracle - Profit stats\n"
+        "/foundry - Foundry dominance\n"
+        "/price - BTC price\n"
+        "/status - API health"
     )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(msg)
 
 async def oracle_command(update, context):
     data = fetch_all_data()
     blocks = data["blocks"]
     btc_price = data["price"]
-    
+
     cutoff = int(time.time()) - 86400
     count = len([b for b in blocks if safe_int(b.get("time")) >= cutoff])
-    
-    # 🌌 THE ANOMALY SCALE (Restored Moods + New Highs)
+
+    # 🌌 THE ANOMALY SCALE (your original style)
     if count >= 30:
         mood, emoji = "🧬 SIMULATION BREAK", "⚠️"
     elif count >= 26:
         mood, emoji = "🦑 ELDRITCH LUCK", "🧿"
-    elif count >= 22: 
+    elif count >= 22:
         mood, emoji = "🔱 DIVINE ALIGNMENT", "🔱"
-    elif count >= 18: 
+    elif count >= 18:
         mood, emoji = "🌌 Cosmic Overdrive", "✨"
-    elif count >= 14: 
+    elif count >= 14:
         mood, emoji = "🚀 Minting Legend", "🔥"
-    elif count >= 11: 
+    elif count >= 11:
         mood, emoji = "✅ Steady Gains", "🟢"
+    elif count >= 9:
+        mood, emoji = "😐 Mild Disappointment", "🟡"
     elif count >= 7:
         mood, emoji = "📉 Pool Depression", "💀"
-    else: 
+    elif count >= 5:
+        mood, emoji = "🪦 Graveyard Shift", "⚰️"
+    elif count >= 3:
+        mood, emoji = "💀 RNG Funeral", "🕯️"
+    elif count >= 1:
         mood, emoji = "🧊 Absolute Zero", "❄️"
+    else:
+        mood, emoji = "🕳️ Event Horizon", "🌑"
 
-    # Calculations (Restored V8.0/V9.0 Accuracy)
     pool_hr_eh = float(data["pool"].get("hashrate", 94e18)) / 1e18
-    luck_pct = (count / EXPECTED_BLOCKS_24H) * 100 
+    luck_pct = (count / EXPECTED_BLOCKS_24H) * 100
     pplns_total = count * MY_SHARE_PER_BLOCK
-    daily_eur = pplns_total * btc_price * 0.92 
+    daily_eur = pplns_total * btc_price * 0.92
     perf = ((pplns_total / PPS_BASELINE) - 1) * 100
-    
+
     verdict = "🟢 STAY ON PPLNS" if pplns_total > PPS_BASELINE else "🔴 SWITCH TO PPS"
-    warning = f"\n⚠️ **Note:** Issues with {', '.join(data['errors'])}" if data["errors"] else ""
+    warning_lines = []
+
+    if data["price_source"] == "cache":
+        warning_lines.append("⚠️ Using cached BTC price")
+    if data["errors"]:
+        warning_lines.append(f"🛠️ Partial data issue: {', '.join(data['errors'])}")
 
     msg = (
         f"🧠 **Adaptive Mining Oracle** {emoji}\n\n"
@@ -137,99 +188,106 @@ async def oracle_command(update, context):
         f"🥤 **Daily Value:** {daily_eur:.2f}€ ({daily_eur/DR_PEPPER_EUR:.1f} Peppers)\n\n"
         f"📊 **Performance:** {perf:+.1f}% vs PPS\n"
         f"🎭 **Mood:** {mood}\n"
-        f"📢 **Verdict:** {verdict}\n"
-        f"{warning}\n"
-        f"--- _V10.1 Anomaly Data_ ---"
+        f"📢 **Verdict:** {verdict}"
     )
-    await update.message.reply_text(msg, parse_mode="Markdown")
-async def gacha_command(update, context):
-    data = fetch_all_data()
-    if not data["blocks"]:
-        await update.message.reply_text("❌ Gacha machine jammed.")
-        return
 
-    rt = safe_int(data["blocks"][0].get("running_time"))
+    if warning_lines:
+        msg += "\n\n" + "\n".join(warning_lines)
 
-    if rt <= 0:
-        await update.message.reply_text("🎲 **Gacha:** 🧊 Cooling down... fresh block! 🐺")
-        return
-
-    if rt < 60: 
-        rank, stars = "ULTRA RARE", "⭐⭐⭐⭐⭐"
-        msg = f"🎲 **Gacha Pull**\nRank: {stars} ({rank})\n\nSpeed: {rt}s! 🐺"
-    elif rt < 600: 
-        rank, stars = "RARE", "⭐⭐⭐⭐"
-        msg = f"🎲 **Gacha Pull**\nRank: {stars} ({rank})\n\nSpeed: {rt//60}m {rt%60}s."
-    else: 
-        rank, stars = "COMMON", "⭐⭐"
-        msg = f"🎲 **Gacha Pull**\nRank: {stars} ({rank})\n\nSpeed: {rt//60}m."
-
-    log_gacha(stars, rt)
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-async def top_command(update, context):
-    if not os.path.exists(GACHA_LOG):
-        await update.message.reply_text("No history yet. 🎰")
+# 🆕 FOUNDRY TRACKER
+async def foundry_command(update, context):
+    foundry = get_foundry_data()
+    if foundry["error"]:
+        await update.message.reply_text(
+            "🧠 Foundry Tracker\n\n⚠️ Foundry data is unavailable right now. Try again in a bit."
+        )
         return
 
-    pulls = []
-    cutoff = time.time() - 86400
-    with open(GACHA_LOG, "r") as f:
-        for line in f:
-            ts, stars, speed = line.strip().split("|")
-            if float(ts) > cutoff: pulls.append((stars, int(speed)))
+    share_24h = foundry["share_24h"]
+    share_1w = foundry["share_1w"]
+    blocks_24h = foundry["blocks_24h"]
 
-    if not pulls:
-        await update.message.reply_text("No pulls in the last 24h. 🐺")
-        return
+    delta = share_24h - share_1w
 
-    top_3 = sorted(pulls, key=lambda x: x[1])[:3]
-    leaderboard = "\n".join([f"{i+1}. {p[0]} - {p[1]}s" for i, p in enumerate(top_3)])
-    await update.message.reply_text(f"🏆 **Top Pulls (24h)**\n\n{leaderboard}", parse_mode="Markdown")
+    if share_1w >= 45:
+        status = "🚨 CRITICAL"
+        mood = "🧨 System Risk"
+    elif share_1w >= 40:
+        status = "⚠️ VERY HIGH"
+        mood = "🔥 Centralization Rising"
+    elif share_1w >= 35:
+        status = "🟠 HIGH"
+        mood = "😐 Getting Uncomfortable"
+    elif share_1w >= 30:
+        status = "🟡 ELEVATED"
+        mood = "👀 Watching Closely"
+    else:
+        status = "🟢 NORMAL"
+        mood = "😌 Decentralized Balance"
 
-async def fleet_command(update, context):
+    if delta > 3:
+        trend = "📈 Spiking"
+    elif delta > 1:
+        trend = "⬆️ Rising"
+    elif delta < -3:
+        trend = "📉 Dropping Fast"
+    elif delta < -1:
+        trend = "⬇️ Cooling"
+    else:
+        trend = "➡️ Stable"
+
     msg = (
-        "🐺 **The Balcony Fleet Status**\n"
-        "📦 S21: 🟢 Online\n"
-        "📦 S19k Pro: 🟢 Online\n\n"
-        "Total Hashrate: ~320 TH/s\n"
-        "Status: Alpha. No Dead Chains. 🐺"
+        f"🧠 **Foundry Tracker**\n\n"
+        f"📊 **24h:** {share_24h:.1f}% ({blocks_24h} blocks)\n"
+        f"📈 **7d avg:** {share_1w:.1f}%\n"
+        f"📉 **Delta:** {delta:+.1f}% ({trend})\n\n"
+        f"⚠️ **Status:** {status}\n"
+        f"🎭 **Mood:** {mood}"
     )
+
     await update.message.reply_text(msg, parse_mode="Markdown")
 
+
+# ✅ PRICE COMMAND (separate!)
 async def price_command(update, context):
     data = fetch_all_data()
     btc_price = data["price"]
-    msg = (
-        f"₿ **Bitcoin Price**\n"
-        f"💸 **USD:** ${btc_price:,.2f}\n"
-        f"💶 **EUR:** {btc_price * 0.92:,.2f}€\n"
-        f"🥤 **Value:** {(btc_price * 0.92)/DR_PEPPER_EUR:.1f} Peppers"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    source_note = " (cached)" if data["price_source"] == "cache" else ""
+    await update.message.reply_text(f"₿ BTC: ${btc_price:,.0f}{source_note}")
 
-async def hype_command(update, context):
+async def status_command(update, context):
     data = fetch_all_data()
-    hour_ago = int(time.time()) - 3600
-    recent = len([b for b in data["blocks"] if safe_int(b.get("time")) >= hour_ago])
-    msg = f"🔥 **HEAT STREAK:** {recent} blocks in the last hour!" if recent >= 2 else "⚖️ Pool is steady."
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    foundry = get_foundry_data()
 
+    def health_line(label, failed):
+        return f"{label}: {'offline' if failed else 'ok'}"
+
+    lines = [
+        "🧠 **Oracle Status**",
+        "",
+        health_line("Price API", "Price API" in data["errors"]),
+        health_line("Pool API", "Pool API" in data["errors"]),
+        health_line("Blocks API", "Blocks API" in data["errors"]),
+        health_line("Foundry API", foundry["error"] is not None),
+        f"Price source: {data['price_source']}",
+    ]
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 # ===== MAIN =====
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
-    
+
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("oracle", oracle_command))
-    app.add_handler(CommandHandler("pull", gacha_command))
-    app.add_handler(CommandHandler("top", top_command))
-    app.add_handler(CommandHandler("fleet", fleet_command))
+    app.add_handler(CommandHandler("foundry", foundry_command))
     app.add_handler(CommandHandler("price", price_command))
-    app.add_handler(CommandHandler("hype", hype_command))
-    
-    print("V9.9 Live: Fusion Complete. Staff Data Unfiltered.")
-    app.run_polling(drop_pending_updates=True) 
+    app.add_handler(CommandHandler("status", status_command))
+
+    print("Bot running...")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
