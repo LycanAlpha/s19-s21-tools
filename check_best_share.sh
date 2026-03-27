@@ -1,7 +1,15 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Load environment variables
 set -a
-. /mnt/c/Users/YoungWolf/Documents/.env
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${MINER_SCRIPTS_ENV_FILE:-$SCRIPT_DIR/.env}"
+
+if [ ! -f "$ENV_FILE" ]; then
+  ENV_FILE="$(cd "$SCRIPT_DIR/.." && pwd)/.env"
+fi
+
+[ -f "$ENV_FILE" ] || { echo "Missing .env file"; exit 1; }
+. "$ENV_FILE"
 set +a
 
 
@@ -30,8 +38,8 @@ FIRMWARES=(
 
 # -------- STATE FILES --------
 LAST_FILES=(
-  "C:/Users/YoungWolf/Documents/last_best_share_1.txt"
-  "C:/Users/YoungWolf/Documents/last_best_share_2.txt"
+  "${BEST_SHARE_STATE_FILE_1:-$SCRIPT_DIR/last_best_share_1.txt}"
+  "${BEST_SHARE_STATE_FILE_2:-$SCRIPT_DIR/last_best_share_2.txt}"
 )
 
 # -------- TELEGRAM --------

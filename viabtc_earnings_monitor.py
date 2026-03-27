@@ -11,10 +11,8 @@ from dotenv import load_dotenv
 
 # ===== CONFIG =====
 BASE_DIR = Path(__file__).resolve().parent
-ENV_CANDIDATES = [
-    BASE_DIR / ".env",
-    BASE_DIR.parent / ".env",
-]
+ENV_OVERRIDE = os.getenv("MINER_SCRIPTS_ENV_FILE")
+ENV_CANDIDATES = [Path(ENV_OVERRIDE)] if ENV_OVERRIDE else [BASE_DIR / ".env", BASE_DIR.parent / ".env"]
 
 for env_path in ENV_CANDIDATES:
     if env_path.exists():
@@ -29,9 +27,14 @@ USER_AGENT = os.getenv("VIABTC_USER_AGENT", "Mozilla/5.0")
 COOKIE = os.getenv("VIABTC_BTC_COOKIE") or os.getenv("VIABTC_COOKIE")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-TMP_FILE = BASE_DIR / "via_btc_last_payout_height.txt"
-BG_IMAGE = BASE_DIR / "earnings_bg.png"
-TEMP_OUTPUT = Path(tempfile.gettempdir()) / "temp_earnings_card_btc.png"
+TMP_FILE = Path(os.getenv("VIABTC_BTC_EARNINGS_STATE_FILE", BASE_DIR / "via_btc_last_payout_height.txt"))
+BG_IMAGE = Path(os.getenv("VIABTC_BTC_EARNINGS_BG_IMAGE", BASE_DIR / "earnings_bg.png"))
+TEMP_OUTPUT = Path(
+    os.getenv(
+        "VIABTC_BTC_EARNINGS_TEMP_OUTPUT",
+        Path(tempfile.gettempdir()) / "temp_earnings_card_btc.png",
+    )
+)
 API_URL_TEMPLATE = (
     "https://www.viabtc.com/res/profit/{coin}/pplns?page=1&limit=10&month={month}"
 )

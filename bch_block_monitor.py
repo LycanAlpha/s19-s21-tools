@@ -12,10 +12,8 @@ from PIL import Image, ImageDraw, ImageFont
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
-ENV_CANDIDATES = [
-    BASE_DIR / ".env",
-    BASE_DIR.parent / ".env",
-]
+ENV_OVERRIDE = os.getenv("MINER_SCRIPTS_ENV_FILE")
+ENV_CANDIDATES = [Path(ENV_OVERRIDE)] if ENV_OVERRIDE else [BASE_DIR / ".env", BASE_DIR.parent / ".env"]
 
 for env_path in ENV_CANDIDATES:
     if env_path.exists():
@@ -24,14 +22,14 @@ for env_path in ENV_CANDIDATES:
 else:
     load_dotenv()
 
-TMP_FILE = BASE_DIR / "via_bch_last_block.txt"
-BG_DIR = BASE_DIR / "block_tier_backgrounds"
+TMP_FILE = Path(os.getenv("VIABTC_BCH_BLOCK_STATE_FILE", BASE_DIR / "via_bch_last_block.txt"))
+BG_DIR = Path(os.getenv("VIABTC_BCH_BLOCK_BG_DIR", BASE_DIR / "block_tier_backgrounds"))
 API_URL = "https://www.viabtc.com/res/pool/BCH/block?page=1&limit=50"
-REQUEST_TIMEOUT = 15
+REQUEST_TIMEOUT = int(os.getenv("VIABTC_REQUEST_TIMEOUT", "15"))
 CARD_SIZE = (720, 405)
 OVERLAY_BOX = ((28, 22), (692, 370))
 SCAN_LIMIT = 30
-USER_AGENT = "Mozilla/5.0"
+USER_AGENT = os.getenv("VIABTC_USER_AGENT", "Mozilla/5.0")
 
 FONT_CANDIDATES = {
     "header": [
@@ -224,8 +222,8 @@ def fetch_blocks() -> list[dict]:
 
 
 def main() -> None:
-    chat_id = require_env("BCH_TELEGRAM_CHAT_ID")
-    token = require_env("BCH_TELEGRAM_TOKEN")
+    chat_id = os.getenv("BCH_TELEGRAM_CHAT_ID") or require_env("TELEGRAM_CHAT_ID")
+    token = os.getenv("BCH_TELEGRAM_TOKEN") or require_env("TELEGRAM_TOKEN")
 
     blocks_list = fetch_blocks()
     last_height = get_last_block_height()

@@ -2,19 +2,30 @@
 import logging
 import os
 import time
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
 from telegram.ext import ApplicationBuilder, CommandHandler
 
 # ===== STARTUP GUARD =====
-load_dotenv("C:/Users/YoungWolf/Documents/.env")
+BASE_DIR = Path(__file__).resolve().parent
+ENV_OVERRIDE = os.getenv("MINER_SCRIPTS_ENV_FILE")
+ENV_CANDIDATES = [Path(ENV_OVERRIDE)] if ENV_OVERRIDE else [BASE_DIR / ".env", BASE_DIR.parent / ".env"]
+
+for env_path in ENV_CANDIDATES:
+    if env_path.exists():
+        load_dotenv(env_path)
+        break
+else:
+    load_dotenv()
+
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TOKEN:
     raise RuntimeError("CRITICAL: TELEGRAM_TOKEN missing from .env file!")
 
 # ===== CONFIG & LOGGING =====
-LOG_FILE = "C:/Users/YoungWolf/Documents/oracle_errors.log"
+LOG_FILE = Path(os.getenv("ORACLE_BOT_LOG_FILE", BASE_DIR / "oracle_errors.log"))
 logging.basicConfig(
     filename=LOG_FILE,
     level=logging.ERROR, 
@@ -27,8 +38,8 @@ PPS_BASELINE = 0.0001796
 MY_SHARE_PER_BLOCK = 0.00001340 
 DR_PEPPER_EUR = 1.30            
 
-PRICE_CACHE_FILE = "C:/Users/YoungWolf/Documents/last_known_price.txt"
-GACHA_LOG = "C:/Users/YoungWolf/Documents/gacha_history.txt"
+PRICE_CACHE_FILE = Path(os.getenv("ORACLE_BOT_PRICE_CACHE_FILE", BASE_DIR / "last_known_price.txt"))
+GACHA_LOG = Path(os.getenv("ORACLE_BOT_GACHA_LOG_FILE", BASE_DIR / "gacha_history.txt"))
 
 BINANCE_URL = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
 BLOCK_API = "https://www.viabtc.com/res/pool/BTC/block?page=1&limit=100"

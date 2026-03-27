@@ -1,2 +1,5 @@
 .env
 replacements.txt
+__pycache__/
+*.py[cod]
+*.log

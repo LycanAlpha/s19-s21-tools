@@ -1,28 +1,46 @@
 #!/usr/bin/env python3
 import os
-import requests
+import time
 import traceback
+from pathlib import Path
 from datetime import datetime, timezone
+
+import requests
 from PIL import Image, ImageDraw, ImageFont
 from dotenv import load_dotenv
 
 # =========================
 # CONFIG
 # =========================
-load_dotenv("C:/Users/YoungWolf/Documents/.env")
+BASE_DIR = Path(__file__).resolve().parent
+ENV_OVERRIDE = os.getenv("MINER_SCRIPTS_ENV_FILE")
+ENV_CANDIDATES = [Path(ENV_OVERRIDE)] if ENV_OVERRIDE else [BASE_DIR / ".env", BASE_DIR.parent / ".env"]
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+for ENV_PATH in ENV_CANDIDATES:
+    if ENV_PATH.exists():
+        load_dotenv(ENV_PATH)
+        break
+else:
+    ENV_PATH = Path(ENV_OVERRIDE) if ENV_OVERRIDE else BASE_DIR.parent / ".env"
+    load_dotenv()
+
+USER_AGENT = os.getenv(
+    "VIABTC_USER_AGENT",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+)
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-COOKIE = os.getenv("COOKIE")
+COOKIE = os.getenv("VIABTC_BTC_COOKIE") or os.getenv("VIABTC_COOKIE") or os.getenv("COOKIE")
 
-TMP_FILE = "via_btc_last_pps_id.txt"
-BG_IMAGE = "pps_bg.png"
-TEMP_OUTPUT = "temp_pps_card.png"
+TMP_FILE = Path(os.getenv("VIABTC_PPS_STATE_FILE", BASE_DIR / "via_btc_last_pps_id.txt"))
+BG_IMAGE = Path(os.getenv("VIABTC_PPS_BG_IMAGE", BASE_DIR / "pps_bg.png"))
+TEMP_OUTPUT = Path(os.getenv("VIABTC_PPS_TEMP_OUTPUT", BASE_DIR / "temp_pps_card.png"))
 
-COIN = "BTC"
-PPS_LIMIT = 50
+COIN = os.getenv("VIABTC_COIN", "BTC")
+PPS_LIMIT = int(os.getenv("VIABTC_PPS_LIMIT", "50"))
+CHECK_INTERVAL = int(os.getenv("VIABTC_PPS_CHECK_INTERVAL", "18000"))
 
 
 # =========================
@@ -32,7 +50,7 @@ def get_headers():
     return {
         "User-Agent": USER_AGENT,
         "Cookie": COOKIE,
-        "Referer": "https://www.viabtc.com/miners/earnings?coin=BTC"
+        "Referer": f"https://www.viabtc.com/miners/earnings?coin={COIN}",
     }
 
 
@@ -40,9 +58,9 @@ def get_headers():
 # STORAGE
 # =========================
 def get_last_pps_id():
-    if os.path.exists(TMP_FILE):
+    if TMP_FILE.exists():
         try:
-            with open(TMP_FILE, "r", encoding="utf-8") as f:
+            with TMP_FILE.open("r", encoding="utf-8") as f:
                 return int(f.read().strip())
         except Exception:
             return 0
@@ -50,7 +68,8 @@ def get_last_pps_id():
 
 
 def update_last_pps_id(last_id):
-    with open(TMP_FILE, "w", encoding="utf-8") as f:
+    TMP_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with TMP_FILE.open("w", encoding="utf-8") as f:
         f.write(str(last_id))
 
 
@@ -122,6 +141,24 @@ def ts_to_local_str(ts):
         return "Unknown"
 
 
+def require_env(name, value):
+    if value:
+        return value
+    raise RuntimeError(
+        f"Missing required environment variable: {name}. "
+        f"Checked env file: {ENV_PATH}"
+    )
+
+
+def get_font(size, preferred_names):
+    for font_name in preferred_names:
+        try:
+            return ImageFont.truetype(font_name, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
 def build_pps_summary(rows):
     total_profit = sum(float(r.get("profit", 0)) for r in rows)
     total_fee = sum(float(r.get("fee", 0)) for r in rows)
@@ -161,7 +198,7 @@ def get_rolling_24h_profit(all_rows):
 # IMAGE CARD
 # =========================
 def create_image_card(new_summary, rolling_profit, rolling_fee):
-    if not os.path.exists(BG_IMAGE):
+    if not BG_IMAGE.exists():
         return False
 
     try:
@@ -170,12 +207,18 @@ def create_image_card(new_summary, rolling_profit, rolling_fee):
         bg = Image.alpha_composite(bg, overlay)
         draw = ImageDraw.Draw(bg)
 
-        try:
-            f_header = ImageFont.truetype("arialbd.ttf", 30)
-            f_body = ImageFont.truetype("arial.ttf", 20)
-            f_emoji = ImageFont.truetype("seguiemj.ttf", 24)
-        except Exception:
-            f_header = f_body = f_emoji = ImageFont.load_default()
+        f_header = get_font(30, ["arialbd.ttf", "DejaVuSans-Bold.ttf"])
+        f_body = get_font(20, ["arial.ttf", "DejaVuSans.ttf"])
+        f_emoji = get_font(
+            24,
+            [
+                "seguiemj.ttf",
+                "NotoColorEmoji.ttf",
+                "Segoe UI Emoji.ttf",
+                "Apple Color Emoji.ttc",
+                "DejaVuSans.ttf",
+            ],
+        )
 
         draw.text((20, 18), "💰", font=f_emoji, embedded_color=True)
         draw.text((55, 16), "ViaBTC PPS Update", font=f_header, fill=(255, 255, 255))
@@ -204,6 +247,9 @@ def create_image_card(new_summary, rolling_profit, rolling_fee):
 # TELEGRAM
 # =========================
 def send_telegram_notification(new_summary, rolling_profit, rolling_fee):
+    token = require_env("TELEGRAM_TOKEN", TOKEN)
+    chat_id = require_env("TELEGRAM_CHAT_ID", CHAT_ID)
+
     period_text = "Unknown"
     if new_summary["first_start"] and new_summary["last_end"]:
         period_text = (
@@ -225,49 +271,53 @@ def send_telegram_notification(new_summary, rolling_profit, rolling_fee):
 
     try:
         if image_created:
-            url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
-            with open(TEMP_OUTPUT, "rb") as img:
-                requests.post(
+            url = f"https://api.telegram.org/bot{token}/sendPhoto"
+            with TEMP_OUTPUT.open("rb") as img:
+                response = requests.post(
                     url,
                     files={"photo": img},
                     data={
-                        "chat_id": CHAT_ID,
+                        "chat_id": chat_id,
                         "caption": caption,
-                        "parse_mode": "Markdown"
+                        "parse_mode": "Markdown",
                     },
-                    timeout=20
+                    timeout=20,
                 )
-            os.remove(TEMP_OUTPUT)
+            response.raise_for_status()
+            TEMP_OUTPUT.unlink(missing_ok=True)
         else:
-            requests.post(
-                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            response = requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
                 data={
-                    "chat_id": CHAT_ID,
+                    "chat_id": chat_id,
                     "text": caption,
-                    "parse_mode": "Markdown"
+                    "parse_mode": "Markdown",
                 },
-                timeout=10
+                timeout=10,
             )
+            response.raise_for_status()
     except Exception as e:
         print(f"Telegram send failed: {e}")
+        TEMP_OUTPUT.unlink(missing_ok=True)
 
 
 # =========================
 # MAIN
 # =========================
-if __name__ == "__main__":
+def run_once():
     try:
+        require_env("COOKIE", COOKIE)
         all_rows = fetch_all_recent_pps_rows()
         if not all_rows:
             print("No PPS rows returned.")
-            raise SystemExit(0)
+            return
 
         last_seen_id = get_last_pps_id()
 
         new_rows = [r for r in all_rows if int(r.get("id", 0)) > last_seen_id]
         new_rows.sort(key=lambda r: int(r.get("id", 0)))
 
-        rolling_rows, rolling_profit, rolling_fee = get_rolling_24h_profit(all_rows)
+        _, rolling_profit, rolling_fee = get_rolling_24h_profit(all_rows)
 
         if new_rows:
             new_summary = build_pps_summary(new_rows)
@@ -285,3 +335,12 @@ if __name__ == "__main__":
 
     except Exception:
         traceback.print_exc()
+
+
+if __name__ == "__main__":
+    print("Starting PPS monitor loop...")
+
+    while True:
+        run_once()
+        print(f"Sleeping for {CHECK_INTERVAL} seconds...\n")
+        time.sleep(CHECK_INTERVAL)

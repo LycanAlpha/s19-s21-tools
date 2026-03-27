@@ -61,23 +61,26 @@ For the bash script, you need:
 
 ## 🔐 Secrets (`.env`)
 
-Create this file:
+Copy the template and fill in your own values:
 
 ```
-C:\Users\YoungWolf\Documents\.env
+cp .env.example .env
 ```
 
-Inside put:
+Example template:
 
 ```
 TELEGRAM_TOKEN=your_token_here
 TELEGRAM_CHAT_ID=your_chat_id
 ASIC_USER=root
 ASIC_PASS=root
+VIABTC_BTC_COOKIE=your_viabtc_btc_cookie
+VIABTC_BCH_COOKIE=your_viabtc_bch_cookie
+MINER_SESSION_COOKIE=your_miner_session_cookie
 ```
 
-This file stays **OUTSIDE** the repo.
-Nothing secret is pushed to GitHub.
+The real `.env` is git-ignored and should stay local only.
+You can also point scripts to a different file with `MINER_SCRIPTS_ENV_FILE=/path/to/.env`.
 
 ---
 

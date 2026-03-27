@@ -3,18 +3,25 @@ import html
 import time
 import requests
 from datetime import datetime
+from pathlib import Path
 from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-load_dotenv("C:/Users/YoungWolf/Documents/.env")
+BASE_DIR = Path(__file__).resolve().parent
+ENV_OVERRIDE = os.getenv("MINER_SCRIPTS_ENV_FILE")
+ENV_CANDIDATES = [Path(ENV_OVERRIDE)] if ENV_OVERRIDE else [BASE_DIR / ".env", BASE_DIR.parent / ".env"]
+
+for env_path in ENV_CANDIDATES:
+    if env_path.exists():
+        load_dotenv(env_path)
+        break
+else:
+    load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-MINER_SESSION_COOKIE = os.getenv(
-    "MINER_SESSION_COOKIE",
-    "MTc3MjIyNzM0NnxEWDhFQVFMX2dBQUJFQUVRQUFCY180QUFBZ1p6ZEhKcGJtY01CZ0FFZFhObGNnWnpkSEpwYm1jTUJnQUVjbTl2ZEFaemRISnBibWNNQmdBRWFHRnphQVp6ZEhKcGJtY01JZ0FnTkdFME5XVmtaVGhoWVdJd04yVmpOMlk0T1RsbE16QTJaR1l5TWprNE9UQT184TQjrGfl5hZfjk3cskE5gd2yGzqBosIZbiJLZO2PGdE=",
-)
+MINER_SESSION_COOKIE = os.getenv("MINER_SESSION_COOKIE") or os.getenv("ASIC_MINER_SESSION_COOKIE")
 BLOCKCHAIN_INFO_TIMEOUT = 5
 MINER_API_TIMEOUT = 7
 TELEGRAM_TIMEOUT = 15
@@ -31,6 +38,7 @@ MINERS = [
     {"name": "S19k Pro", "ip": "192.168.1.199", "miner_type": "S19k", "default_asic_count": 77},
     {"name": "S21", "ip": "192.168.1.205", "miner_type": "S21", "default_asic_count": 108},
 ]
+ERROR_LOG_FILE = Path(os.getenv("ASIC_STATS_ERROR_LOG", BASE_DIR / "asic_stats_error.log"))
 
 
 def clean(x):
@@ -113,7 +121,7 @@ def to_float(value, default=0.0):
 def log_error(message):
     timestamp = datetime.now()
     print(f"[{timestamp}] {message}")
-    with open("asic_stats_error.log", "a", encoding="utf-8") as f:
+    with open(ERROR_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"[{timestamp}] {message}\n")
 
 
@@ -137,6 +145,8 @@ def create_retry_session():
 
 
 def get_session(ip):
+    if not MINER_SESSION_COOKIE:
+        raise RuntimeError("Missing MINER_SESSION_COOKIE or ASIC_MINER_SESSION_COOKIE")
     session = create_retry_session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0",

@@ -11,10 +11,8 @@ from dotenv import load_dotenv
 
 # ===== CONFIG =====
 BASE_DIR = Path(__file__).resolve().parent
-ENV_CANDIDATES = [
-    BASE_DIR / ".env",
-    BASE_DIR.parent / ".env",
-]
+ENV_OVERRIDE = os.getenv("MINER_SCRIPTS_ENV_FILE")
+ENV_CANDIDATES = [Path(ENV_OVERRIDE)] if ENV_OVERRIDE else [BASE_DIR / ".env", BASE_DIR.parent / ".env"]
 
 for env_path in ENV_CANDIDATES:
     if env_path.exists():
@@ -23,14 +21,14 @@ for env_path in ENV_CANDIDATES:
 else:
     load_dotenv()
 
-TMP_FILE = BASE_DIR / "via_btc_last_block.txt"
-RECOMMEND_FILE = BASE_DIR / "last_recommendation.txt"
+TMP_FILE = Path(os.getenv("VIABTC_BTC_BLOCK_STATE_FILE", BASE_DIR / "via_btc_last_block.txt"))
+RECOMMEND_FILE = Path(os.getenv("VIABTC_BTC_RECOMMENDATION_FILE", BASE_DIR / "last_recommendation.txt"))
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-IMG_PATH = BASE_DIR / "block_card_final.png"
-BG_DIR = BASE_DIR / "block_tier_backgrounds"
+IMG_PATH = Path(os.getenv("VIABTC_BTC_BLOCK_IMAGE_PATH", BASE_DIR / "block_card_final.png"))
+BG_DIR = Path(os.getenv("VIABTC_BTC_BLOCK_BG_DIR", BASE_DIR / "block_tier_backgrounds"))
 API_URL = "https://www.viabtc.com/res/pool/BTC/block?page=1&limit=50"
-REQUEST_TIMEOUT = 15
+REQUEST_TIMEOUT = int(os.getenv("VIABTC_REQUEST_TIMEOUT", "15"))
 
 PPS_BASELINE = 0.0001992
 PPLNS_PER_BLOCK = 0.0000125
