@@ -1,199 +1,235 @@
 #!/usr/bin/env python3
-import requests
-import json
+import logging
 import os
-import time
-import traceback
+import tempfile
 from datetime import datetime
+from pathlib import Path
+
+import requests
 from PIL import Image, ImageDraw, ImageFont
+from dotenv import load_dotenv
 
 # ===== CONFIG =====
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
-COOKIE = "lang=en_US; token=xxx; currency=USD; timezone=local"
+BASE_DIR = Path(__file__).resolve().parent
+ENV_CANDIDATES = [
+    BASE_DIR / ".env",
+    BASE_DIR.parent / ".env",
+]
 
-from dotenv import load_dotenv
-load_dotenv("C:/Users/YoungWolf/Documents/.env")
+for env_path in ENV_CANDIDATES:
+    if env_path.exists():
+        load_dotenv(env_path)
+        break
+else:
+    load_dotenv()
 
+COIN = "BTC"
+REQUEST_TIMEOUT = int(os.getenv("VIABTC_REQUEST_TIMEOUT", "15"))
+USER_AGENT = os.getenv("VIABTC_USER_AGENT", "Mozilla/5.0")
+COOKIE = os.getenv("VIABTC_BTC_COOKIE") or os.getenv("VIABTC_COOKIE")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-TOKEN   = os.getenv("TELEGRAM_TOKEN")
-# Files
-TMP_FILE = "via_btc_last_payout_height.txt"
-BG_IMAGE = "earnings_bg.png"       # YOU NEED TO CREATE THIS IMAGE FILE
-TEMP_OUTPUT = "temp_earnings_card.png" # Script creates this temporarily
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+TMP_FILE = BASE_DIR / "via_btc_last_payout_height.txt"
+BG_IMAGE = BASE_DIR / "earnings_bg.png"
+TEMP_OUTPUT = Path(tempfile.gettempdir()) / "temp_earnings_card_btc.png"
+API_URL_TEMPLATE = (
+    "https://www.viabtc.com/res/profit/{coin}/pplns?page=1&limit=10&month={month}"
+)
+REFERER = f"https://www.viabtc.com/miners/earnings?coin={COIN}"
 
-def get_current_month_str():
-    return datetime.now().strftime("%Y-%m")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
+
+
+def require_env(name):
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
 
 def get_headers():
-    return {
+    headers = {
         "User-Agent": USER_AGENT,
-        "Cookie": COOKIE,
-        "Referer": "https://www.viabtc.com/miners/earnings?coin=BTC",
-        "Origin": "https://www.viabtc.com"
+        "Referer": REFERER,
     }
+    if COOKIE:
+        headers["Cookie"] = COOKIE
+    return headers
 
-# --- Image Generation Function ---
+
+def load_font(size, bold=False, emoji=False):
+    candidates = []
+
+    if emoji:
+        candidates.extend(
+            [
+                "seguiemj.ttf",
+                "SegoeUIEmoji.ttf",
+                "NotoColorEmoji.ttf",
+                "DejaVuSans.ttf",
+            ]
+        )
+    elif bold:
+        candidates.extend(["arialbd.ttf", "DejaVuSans-Bold.ttf"])
+    else:
+        candidates.extend(["arial.ttf", "DejaVuSans.ttf"])
+
+    for font_name in candidates:
+        try:
+            return ImageFont.truetype(font_name, size)
+        except OSError:
+            continue
+
+    return ImageFont.load_default()
+
+
 def create_image_card(p_height, p_profit, p_date):
-    if not os.path.exists(BG_IMAGE):
-        print(f"Warning: Background image {BG_IMAGE} not found. Skipping image gen.")
+    if not BG_IMAGE.exists():
+        logger.warning("Background image not found at %s", BG_IMAGE)
         return False
 
     try:
-        # Load Background
         bg = Image.open(BG_IMAGE).convert("RGBA")
-        width, height = bg.size
-
-        # Add a dark semi-transparent overlay for readability
-        overlay = Image.new('RGBA', bg.size, (0, 0, 0, 160)) # 160 = opacity
+        overlay = Image.new("RGBA", bg.size, (0, 0, 0, 160))
         bg = Image.alpha_composite(bg, overlay)
-        
         draw = ImageDraw.Draw(bg)
-        
-        # Load Fonts (Try common Windows fonts, fallback to default)
-        try:
-            # Adjust font sizes based on your image resolution
-            font_header = ImageFont.truetype("arialbd.ttf", int(height/8)) 
-            font_body = ImageFont.truetype("arial.ttf", int(height/12))
-        except:
-            font_header = ImageFont.load_default()
-            font_body = ImageFont.load_default()
 
-        text_color = (255, 255, 255) # White text
+        f_header = load_font(45, bold=True)
+        f_body = load_font(30)
+        f_emoji = load_font(40, emoji=True)
 
-        # Draw Header
-        header_text = "💰 New Payout Detected!"
-        draw.text((width*0.05, height*0.1), header_text, font=font_header, fill=text_color)
+        draw.text((40, 40), "💰", font=f_emoji, embedded_color=True)
+        draw.text((95, 45), "New Payout Detected!", font=f_header, fill=(255, 255, 255))
 
-        # Draw Body Text
         lines = [
-            f"🤑 Profit: {p_profit:.8f} BTC",
-            f"🧱 Block: {p_height}",
-            f"📅 Time:  {p_date}"
+            ("💵", f"Profit: {p_profit:.8f} {COIN}"),
+            ("🧱", f"Block: {p_height}"),
+            ("📅", f"Time: {p_date}"),
         ]
 
-        y_offset = height * 0.35
-        line_spacing = height * 0.12
+        y = 140
+        for icon, text in lines:
+            draw.text((40, y), icon, font=f_emoji, embedded_color=True)
+            draw.text((90, y + 5), text, font=f_body, fill=(255, 255, 255))
+            y += 60
 
-        for line in lines:
-            draw.text((width*0.05, y_offset), line, font=font_body, fill=text_color)
-            y_offset += line_spacing
-
-        # Save final image
         bg.convert("RGB").save(TEMP_OUTPUT)
         return True
-
-    except Exception as e:
-        print(f"Error creating image: {e}")
+    except Exception:
+        logger.exception("Error creating image card")
         return False
 
-# --- Telegram Sending (Photo vs Text) ---
+
 def send_telegram_notification(p_height, p_profit, p_date):
-    # 1. Try to create image
     image_created = create_image_card(p_height, p_profit, p_date)
-    
     caption = (
         f"💰 **ViaBTC Payout**\n"
         f"🧱 Block: `{p_height}`\n"
-        f"🤑 Profit: `{p_profit:.8f} BTC`"
+        f"💵 Profit: `{p_profit:.8f} {COIN}`"
     )
 
     try:
         if image_created:
-            # Send Photo
-            url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
-            with open(TEMP_OUTPUT, 'rb') as img_file:
-                files = {'photo': img_file}
-                data = {'chat_id': CHAT_ID, 'caption': caption, 'parse_mode': 'Markdown'}
-                requests.post(url, files=files, data=data, timeout=20)
-            # Clean up temp file
-            os.remove(TEMP_OUTPUT) 
-        else:
-            # Fallback: Send boring Text message
-            url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-            data = {"chat_id": CHAT_ID, "text": caption, "parse_mode": "Markdown"}
-            requests.post(url, data=data, timeout=10)
-            
-    except Exception as e:
-        print(f"Failed to send Telegram: {e}")
+            with open(TEMP_OUTPUT, "rb") as img:
+                response = requests.post(
+                    f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
+                    files={"photo": img},
+                    data={
+                        "chat_id": CHAT_ID,
+                        "caption": caption,
+                        "parse_mode": "Markdown",
+                    },
+                    timeout=REQUEST_TIMEOUT,
+                )
+            response.raise_for_status()
+            TEMP_OUTPUT.unlink(missing_ok=True)
+            return
+
+        response = requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            data={
+                "chat_id": CHAT_ID,
+                "text": caption,
+                "parse_mode": "Markdown",
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+    except Exception:
+        logger.exception("Telegram notification failed")
+
 
 def get_last_payout_height():
-    if os.path.exists(TMP_FILE):
-        with open(TMP_FILE, "r") as f:
-            try:
-                return int(f.read().strip())
-            except ValueError:
-                return 0
+    if TMP_FILE.exists():
+        try:
+            return int(TMP_FILE.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            logger.warning("Could not parse last payout height from %s", TMP_FILE)
+            return 0
     return 0
 
+
 def update_last_payout_height(height):
-    with open(TMP_FILE, "w") as f:
-        f.write(str(height))
+    TMP_FILE.write_text(str(height), encoding="utf-8")
 
-# ===== MAIN LOGIC =====
-try:
-    print(f"Checking ViaBTC Earnings for {get_current_month_str()}...")
-    
-    month_str = get_current_month_str()
-    # Using limit=10 to catch up if needed
-    api_url = f"https://www.viabtc.com/res/profit/BTC/pplns?page=1&limit=10&month={month_str}"
 
-    resp = requests.get(api_url, headers=get_headers(), timeout=10)
-    
-    if resp.status_code != 200:
-        print(f"ERROR: API returned status code {resp.status_code} (Cookie likely expired)")
-        input("Press Enter to close...")
-        exit(1)
+def parse_payout_date(pay):
+    payout_date = pay.get("date")
+    if payout_date:
+        return payout_date
 
-    data = resp.json()
-    if data.get("code") != 0:
-        print(f"API Error Message: {data.get('message')}")
-        input("Press Enter to close...")
-        exit(1)
+    timestamp = pay.get("time")
+    if timestamp is None:
+        return "Unknown"
 
-    payouts_list = data["data"]["data"]
-    if not payouts_list:
-        print("No payouts found in API response.")
-        input("Press Enter to close...")
-        exit(0)
+    try:
+        return datetime.fromtimestamp(int(timestamp)).strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError, OSError):
+        return "Unknown"
 
-    last_known_height = get_last_payout_height()
-    new_payouts = []
 
-    for pay in payouts_list:
-        p_height = int(pay.get("height", 0))
-        if p_height > last_known_height:
-            new_payouts.append(pay)
+def fetch_payouts():
+    month_str = datetime.now().strftime("%Y-%m")
+    api_url = API_URL_TEMPLATE.format(coin=COIN, month=month_str)
+    response = requests.get(api_url, headers=get_headers(), timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("code") not in (None, 0):
+        raise RuntimeError(f"ViaBTC API error: {payload.get('message', 'Unknown error')}")
+    return payload.get("data", {}).get("data", [])
 
-    new_payouts.sort(key=lambda x: int(x.get("height", 0)))
 
-    if not new_payouts:
-        print("No new payouts found.")
-    else:
-        print(f"Found {len(new_payouts)} new payouts. Sending Telegram...")
-        
+if __name__ == "__main__":
+    try:
+        CHAT_ID = require_env("TELEGRAM_CHAT_ID")
+        TOKEN = require_env("TELEGRAM_TOKEN")
+
+        payouts = fetch_payouts()
+        last_known = get_last_payout_height()
+
+        new_payouts = []
+        for payout in payouts:
+            try:
+                if int(payout.get("height", 0)) > last_known:
+                    new_payouts.append(payout)
+            except (TypeError, ValueError):
+                logger.warning("Skipping payout with invalid height: %s", payout)
+
+        new_payouts.sort(key=lambda item: int(item.get("height", 0)))
+
         for pay in new_payouts:
-            p_height = int(pay.get("height", 0))
-            p_profit = float(pay.get("profit", 0.0))
-            
-            # Date conversion logic from the debug script
-            if "date" in pay:
-                p_date = pay["date"]
-            elif "time" in pay:
-                p_date = datetime.fromtimestamp(int(pay["time"])).strftime('%Y-%m-%d %H:%M')
-            else:
-                p_date = "Unknown Date"
+            p_h = int(pay.get("height", 0))
+            p_p = float(pay.get("profit", 0.0))
+            p_d = parse_payout_date(pay)
 
-            # Calling the new notification function
-            send_telegram_notification(p_height, p_profit, p_date)
-            
-            print(f" -> Sent notification for Block {p_height}")
-            update_last_payout_height(p_height)
+            send_telegram_notification(p_h, p_p, p_d)
+            update_last_payout_height(p_h)
+            logger.info("Sent payout for block %s", p_h)
 
-    print("\nDone! Script finished successfully.")
-    # Wait a moment so you can read output before window closes automatically
-    time.sleep(3) 
-
-except Exception:
-    print("\nCRITICAL ERROR OCCURRED:")
-    traceback.print_exc()
-    print("\n------------------------------------------------")
+    except requests.HTTPError as exc:
+        logger.error("ViaBTC request failed: %s", exc)
+        if exc.response is not None and exc.response.status_code in {401, 403}:
+            logger.error("ViaBTC cookie may be missing or expired")
+    except Exception:
+        logger.exception("viabtc_earnings_monitor.py failed")
