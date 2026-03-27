@@ -21,6 +21,9 @@ else:
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+ASIC_USER = os.getenv("ASIC_USER")
+ASIC_PASS = os.getenv("ASIC_PASS")
+ASIC_COOKIE = os.getenv("ASIC_COOKIE")
 MINER_SESSION_COOKIE = os.getenv("MINER_SESSION_COOKIE") or os.getenv("ASIC_MINER_SESSION_COOKIE")
 BLOCKCHAIN_INFO_TIMEOUT = 5
 MINER_API_TIMEOUT = 7
@@ -145,14 +148,20 @@ def create_retry_session():
 
 
 def get_session(ip):
-    if not MINER_SESSION_COOKIE:
-        raise RuntimeError("Missing MINER_SESSION_COOKIE or ASIC_MINER_SESSION_COOKIE")
     session = create_retry_session()
-    session.headers.update({
+    headers = {
         "User-Agent": "Mozilla/5.0",
         "Referer": f"http://{ip}/",
-        "Cookie": f"lang=en; mysession={MINER_SESSION_COOKIE}",
-    })
+    }
+
+    raw_cookie = ASIC_COOKIE or MINER_SESSION_COOKIE
+
+    if raw_cookie:
+        headers["Cookie"] = raw_cookie
+    elif ASIC_USER and ASIC_PASS:
+        session.auth = (ASIC_USER, ASIC_PASS)
+
+    session.headers.update(headers)
     return session
 
 

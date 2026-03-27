@@ -45,6 +45,9 @@ BINANCE_URL = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
 BLOCK_API = "https://www.viabtc.com/res/pool/BTC/block?page=1&limit=100"
 POOL_API = "https://www.viabtc.com/res/pool/BTC/state"
 FOUNDRY_API = "https://mempool.space/api/v1/mining/pool/foundryusa"
+VIABTC_MEMPOOL_API = "https://mempool.space/api/v1/mining/pool/viabtc"
+MEMPOOL_POOLS_24H_API = "https://mempool.space/api/v1/mining/pools/24h"
+VIABTC_TRACKER_EXPECTED_BLOCKS_24H = 14.5
 
 # ===== HELPERS =====
 
@@ -130,6 +133,42 @@ def get_foundry_data():
 
     return results
 
+def get_viabtc_tracker_data():
+    results = {
+        "share_24h": None,
+        "share_1w": None,
+        "blocks_24h": None,
+        "estimated_hashrate_eh": None,
+        "avg_block_health": None,
+        "avg_fee_delta": None,
+        "error": None,
+    }
+
+    try:
+        data = fetch_json(VIABTC_MEMPOOL_API, "ViaBTC Tracker API", timeout=10)
+        results["share_24h"] = data["blockShare"]["24h"] * 100
+        results["share_1w"] = data["blockShare"]["1w"] * 100
+        results["blocks_24h"] = data["blockCount"]["24h"]
+        results["estimated_hashrate_eh"] = data["estimatedHashrate"] / 1e18
+        results["avg_block_health"] = data["avgBlockHealth"]
+    except Exception as exc:
+        results["error"] = "ViaBTC Tracker API"
+        log_api_error("ViaBTC Tracker API", exc)
+        return results
+
+    try:
+        pools_24h = fetch_json(MEMPOOL_POOLS_24H_API, "Mempool Pools 24h API", timeout=10)
+        viabtc_pool = next(
+            (pool for pool in pools_24h.get("pools", []) if pool.get("slug") == "viabtc"),
+            None,
+        )
+        if viabtc_pool and viabtc_pool.get("avgFeeDelta") is not None:
+            results["avg_fee_delta"] = float(viabtc_pool["avgFeeDelta"])
+    except Exception as exc:
+        log_api_error("Mempool Pools 24h API", exc)
+
+    return results
+
 # ===== COMMANDS =====
 
 async def start_command(update, context):
@@ -137,6 +176,7 @@ async def start_command(update, context):
         "🐺 Mining Oracle\n\n"
         "/oracle - Profit stats\n"
         "/foundry - Foundry dominance\n"
+        "/viabtc - ViaBTC pulse\n"
         "/price - BTC price\n"
         "/status - API health"
     )
@@ -223,37 +263,105 @@ async def foundry_command(update, context):
     delta = share_24h - share_1w
 
     if share_1w >= 45:
-        status = "🚨 CRITICAL"
-        mood = "🧨 System Risk"
+        status = "🚨 GODZILLA MODE"
+        mood = "🧨 Foundry is stomping through decentralization like cardboard"
     elif share_1w >= 40:
-        status = "⚠️ VERY HIGH"
-        mood = "🔥 Centralization Rising"
+        status = "⚠️ SKY-DARKENING"
+        mood = "🔥 The pool is getting large enough to cast weather"
     elif share_1w >= 35:
-        status = "🟠 HIGH"
-        mood = "😐 Getting Uncomfortable"
+        status = "🟠 MEGA CHONK"
+        mood = "😐 This is where the room starts quietly sweating"
     elif share_1w >= 30:
-        status = "🟡 ELEVATED"
-        mood = "👀 Watching Closely"
+        status = "🟡 GROWING TEETH"
+        mood = "👀 Big enough that everyone should keep one eye open"
     else:
-        status = "🟢 NORMAL"
-        mood = "😌 Decentralized Balance"
+        status = "🟢 BIG BUT LEGAL"
+        mood = "😌 Large, loud, but not yet setting off the apocalypse alarm"
 
     if delta > 3:
-        trend = "📈 Spiking"
+        trend = "📈 Vertical Launch"
     elif delta > 1:
-        trend = "⬆️ Rising"
+        trend = "⬆️ Bulking Up"
     elif delta < -3:
-        trend = "📉 Dropping Fast"
+        trend = "📉 Lost The Sauce"
     elif delta < -1:
-        trend = "⬇️ Cooling"
+        trend = "⬇️ Deflating"
     else:
-        trend = "➡️ Stable"
+        trend = "➡️ Holding The Line"
 
     msg = (
         f"🧠 **Foundry Tracker**\n\n"
         f"📊 **24h:** {share_24h:.1f}% ({blocks_24h} blocks)\n"
         f"📈 **7d avg:** {share_1w:.1f}%\n"
         f"📉 **Delta:** {delta:+.1f}% ({trend})\n\n"
+        f"⚠️ **Status:** {status}\n"
+        f"🎭 **Mood:** {mood}"
+    )
+
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def viabtc_command(update, context):
+    viabtc = get_viabtc_tracker_data()
+    if viabtc["error"]:
+        await update.message.reply_text(
+            "🧠 ViaBTC Pulse\n\n⚠️ ViaBTC tracker data is unavailable right now. Try again in a bit."
+        )
+        return
+
+    share_24h = viabtc["share_24h"]
+    share_1w = viabtc["share_1w"]
+    blocks_24h = viabtc["blocks_24h"]
+    hashrate_eh = viabtc["estimated_hashrate_eh"]
+    avg_block_health = viabtc["avg_block_health"]
+    avg_fee_delta = viabtc["avg_fee_delta"]
+
+    delta = share_24h - share_1w
+    luck_pct = (blocks_24h / VIABTC_TRACKER_EXPECTED_BLOCKS_24H) * 100
+
+    if blocks_24h >= 19:
+        status = "🧬 REALITY TEARING"
+        mood = "⚡ The hash gods are free and nobody is safe"
+    elif blocks_24h >= 16:
+        status = "🚀 TURBO CANNON"
+        mood = "🔥 ViaBTC is speedrunning destiny"
+    elif blocks_24h >= 13:
+        status = "🟢 CLEAN ENGINE"
+        mood = "😌 The machine spirit is cooperative today"
+    elif blocks_24h >= 10:
+        status = "🟡 VIBES OFF"
+        mood = "😐 Not tragic, not glorious, just mildly cursed"
+    elif blocks_24h >= 7:
+        status = "🟠 FROSTBITE"
+        mood = "🥶 Paying the daily tribute to RNG"
+    else:
+        status = "🔴 COFFIN MODE"
+        mood = "🪦 Somebody unplugged luck and sold it for scrap"
+
+    if delta >= 2.0:
+        trend = "📈 Full Send"
+    elif delta >= 0.75:
+        trend = "⬆️ Waking Up"
+    elif delta <= -2.0:
+        trend = "📉 Fell Down The Stairs"
+    elif delta <= -0.75:
+        trend = "⬇️ Losing Its Aura"
+    else:
+        trend = "➡️ Dead Even"
+
+    fee_line = ""
+    if avg_fee_delta is not None:
+        fee_line = f"\n💸 **Fee Delta:** {avg_fee_delta:+.4f} BTC"
+
+    msg = (
+        f"🧠 **ViaBTC Pulse**\n\n"
+        f"🧱 **Blocks (24h):** {blocks_24h} / {VIABTC_TRACKER_EXPECTED_BLOCKS_24H:.1f} expected\n"
+        f"🎯 **Luck:** {luck_pct:.1f}%\n"
+        f"📊 **24h Share:** {share_24h:.1f}%\n"
+        f"📈 **7d Avg:** {share_1w:.1f}%\n"
+        f"📉 **Delta:** {delta:+.1f}% ({trend})\n"
+        f"📡 **Est. Hashrate:** {hashrate_eh:.1f} EH/s\n"
+        f"🩺 **Block Health:** {avg_block_health:.2f}%"
+        f"{fee_line}\n\n"
         f"⚠️ **Status:** {status}\n"
         f"🎭 **Mood:** {mood}"
     )
@@ -271,6 +379,7 @@ async def price_command(update, context):
 async def status_command(update, context):
     data = fetch_all_data()
     foundry = get_foundry_data()
+    viabtc_tracker = get_viabtc_tracker_data()
 
     def health_line(label, failed):
         return f"{label}: {'offline' if failed else 'ok'}"
@@ -282,6 +391,7 @@ async def status_command(update, context):
         health_line("Pool API", "Pool API" in data["errors"]),
         health_line("Blocks API", "Blocks API" in data["errors"]),
         health_line("Foundry API", foundry["error"] is not None),
+        health_line("ViaBTC tracker API", viabtc_tracker["error"] is not None),
         f"Price source: {data['price_source']}",
     ]
 
@@ -294,6 +404,7 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("oracle", oracle_command))
     app.add_handler(CommandHandler("foundry", foundry_command))
+    app.add_handler(CommandHandler("viabtc", viabtc_command))
     app.add_handler(CommandHandler("price", price_command))
     app.add_handler(CommandHandler("status", status_command))
 
