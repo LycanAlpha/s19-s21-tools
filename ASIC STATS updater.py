@@ -4,15 +4,32 @@ import time
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 load_dotenv("C:/Users/YoungWolf/Documents/.env")
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+MINER_SESSION_COOKIE = os.getenv(
+    "MINER_SESSION_COOKIE",
+    "MTc3MjIyNzM0NnxEWDhFQVFMX2dBQUJFQUVRQUFCY180QUFBZ1p6ZEhKcGJtY01CZ0FFZFhObGNnWnpkSEpwYm1jTUJnQUVjbTl2ZEFaemRISnBibWNNQmdBRWFHRnphQVp6ZEhKcGJtY01JZ0FnTkdFME5XVmtaVGhoWVdJd04yVmpOMlk0T1RsbE16QTJaR1l5TWprNE9UQT184TQjrGfl5hZfjk3cskE5gd2yGzqBosIZbiJLZO2PGdE=",
+)
+BLOCKCHAIN_INFO_TIMEOUT = 5
+MINER_API_TIMEOUT = 7
+TELEGRAM_TIMEOUT = 15
+POLL_INTERVAL_SECONDS = 16200  # 4.5 hours
+REQUEST_RETRY_TOTAL = 2
+TELEGRAM_MAX_MESSAGE_LEN = 4000
+HIGH_TEMP_THRESHOLD = 80
+HIGH_REJECT_THRESHOLD = 1.5
+WEAK_CHIP_ALERT_COUNT = 3
+VERY_WEAK_CHIP_RATIO = 0.85
+WEAK_CHIP_RATIO = 0.90
 
 MINERS = [
-    {"name": "S19k Pro", "ip": "192.168.1.199"},
-    {"name": "S21", "ip": "192.168.1.205"},
+    {"name": "S19k Pro", "ip": "192.168.1.199", "miner_type": "S19k", "default_asic_count": 77},
+    {"name": "S21", "ip": "192.168.1.205", "miner_type": "S21", "default_asic_count": 108},
 ]
 
 
@@ -27,6 +44,21 @@ def format_uptime(sec):
     m = (sec % 3600) // 60
     s = sec % 60
     return f"{d}d {h}h {m}m {s}s"
+
+
+def format_uptime_compact(sec):
+    sec = int(sec)
+    d = sec // 86400
+    h = (sec % 86400) // 3600
+    m = (sec % 3600) // 60
+
+    parts = []
+    if d:
+        parts.append(f"{d}d")
+    if h or parts:
+        parts.append(f"{h}h")
+    parts.append(f"{m}m")
+    return " ".join(parts[:2] if len(parts) > 2 else parts)
 
 
 def format_best_share(value):
@@ -50,13 +82,66 @@ def format_big_num(value):
         return "?"
 
 
-def get_session(ip):
-    hardcoded_cookie = "-="
+def format_compact_num(value):
+    try:
+        value = float(value)
+        if value >= 1_000_000_000:
+            return f"{value / 1_000_000_000:.2f}B"
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:.2f}M"
+        if value >= 1_000:
+            return f"{value / 1_000:.2f}K"
+        return str(int(value))
+    except Exception:
+        return "?"
+
+
+def to_int(value, default=0):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def to_float(value, default=0.0):
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def log_error(message):
+    timestamp = datetime.now()
+    print(f"[{timestamp}] {message}")
+    with open("asic_stats_error.log", "a", encoding="utf-8") as f:
+        f.write(f"[{timestamp}] {message}\n")
+
+
+def build_retry_strategy():
+    return Retry(
+        total=REQUEST_RETRY_TOTAL,
+        connect=REQUEST_RETRY_TOTAL,
+        read=REQUEST_RETRY_TOTAL,
+        backoff_factor=0.6,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET", "POST"}),
+    )
+
+
+def create_retry_session():
     session = requests.Session()
+    retry_adapter = HTTPAdapter(max_retries=build_retry_strategy())
+    session.mount("http://", retry_adapter)
+    session.mount("https://", retry_adapter)
+    return session
+
+
+def get_session(ip):
+    session = create_retry_session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0",
         "Referer": f"http://{ip}/",
-        "Cookie": f"lang=en; mysession={hardcoded_cookie}",
+        "Cookie": f"lang=en; mysession={MINER_SESSION_COOKIE}",
     })
     return session
 
@@ -68,10 +153,267 @@ def get_pool_value(pool, *keys, default=None):
     return default
 
 
-def fetch_pools(ip):
-    session = get_session(ip)
+def get_json(session, url, timeout):
+    response = session.get(url, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
+
+def get_text(url, timeout):
+    response = create_retry_session().get(url, timeout=timeout)
+    response.raise_for_status()
+    return response.text
+
+
+def split_telegram_message(message, max_len=TELEGRAM_MAX_MESSAGE_LEN):
+    if len(message) <= max_len:
+        return [message]
+
+    chunks = []
+    current_lines = []
+    current_len = 0
+
+    for line in message.splitlines():
+        line_len = len(line) + 1
+        if current_lines and current_len + line_len > max_len:
+            chunks.append("\n".join(current_lines))
+            current_lines = [line]
+            current_len = line_len
+            continue
+
+        if line_len > max_len:
+            if current_lines:
+                chunks.append("\n".join(current_lines))
+                current_lines = []
+                current_len = 0
+
+            for start in range(0, len(line), max_len):
+                chunks.append(line[start:start + max_len])
+            continue
+
+        current_lines.append(line)
+        current_len += line_len
+
+    if current_lines:
+        chunks.append("\n".join(current_lines))
+
+    return chunks
+
+
+def parse_max_temp(temp_pair):
     try:
-        data = session.get(f"http://{ip}/api/pools", timeout=7).json()
+        return int(str(temp_pair).replace("°C", "").replace("–", "/").split("/")[-1])
+    except (TypeError, ValueError):
+        return None
+
+
+def determine_farm_status(total_hr):
+    if total_hr >= 300:
+        return "🐺 ALPHA (Full Pack)"
+    if total_hr >= 200:
+        return "🐕 BETA (Miner Down)"
+    return "💀 OMEGA (Critical Failure)"
+
+
+def format_status_icon(is_online):
+    return "🟢" if is_online else "🔴"
+
+
+def format_fan_line(fans):
+    if not isinstance(fans, list) or not fans:
+        return None
+
+    raw_val = str(fans[0]).replace("%", "")
+    try:
+        num_val = int(float(raw_val))
+        bar = "█" * (num_val // 10) + "░" * (10 - (num_val // 10))
+        return f"🌀 <b>Fans:</b> [{bar}] {num_val}%"
+    except (TypeError, ValueError):
+        return f"🌀 <b>Fans:</b> {fans}"
+
+
+def build_chip_alerts(miner_name, chip_stats):
+    alerts = []
+    if not chip_stats:
+        return alerts
+
+    weak_chip_count = chip_stats.get("weak_chip_count", 0)
+    if weak_chip_count >= WEAK_CHIP_ALERT_COUNT:
+        alerts.append(f"⚠️ <b>{miner_name}</b> has {weak_chip_count} weak chips")
+
+    lowest_chip = chip_stats.get("lowest_chip_hashrate", 0)
+    avg_chip = chip_stats.get("avg_chip_hashrate", 0)
+    if avg_chip > 0 and lowest_chip < avg_chip * VERY_WEAK_CHIP_RATIO:
+        alerts.append(f"📉 <b>{miner_name}</b> has a very weak chip ({lowest_chip:.2f} GH/s)")
+
+    return alerts
+
+
+def build_pool_alerts(miner_name, pool):
+    alerts = []
+    if not pool:
+        return alerts
+
+    if pool.get("status") != "Alive":
+        alerts.append(f"📡 <b>{miner_name}</b> pool is {clean(pool.get('status', 'Unknown'))}!")
+
+    if pool.get("rejected_pct", 0) > HIGH_REJECT_THRESHOLD:
+        alerts.append(f"❌ <b>{miner_name}</b> high reject rate: {pool['rejected_pct']:.2f}%")
+
+    gf = pool.get("get_failures")
+    rf = pool.get("remote_failures")
+
+    if gf is not None and to_int(gf) > 0:
+        alerts.append(f"🌐 <b>{miner_name}</b> get failures: {gf}")
+
+    if rf is not None and to_int(rf) > 0:
+        alerts.append(f"📉 <b>{miner_name}</b> remote failures: {rf}")
+
+    return alerts
+
+
+def build_miner_alerts(miner):
+    alerts = []
+    if not miner["online"]:
+        return [f"🔴 <b>{miner['name']}</b> is OFFLINE!"]
+
+    extra = miner["extra"]
+
+    for i, val in enumerate(extra["chain_real"]):
+        if val == 0:
+            alerts.append(f"⚠️ <b>{miner['name']}</b>: Ch {i} is DEAD!")
+
+    for temp_pair in extra.get("temps", []):
+        max_temp = parse_max_temp(temp_pair)
+        if max_temp is not None and max_temp > HIGH_TEMP_THRESHOLD:
+            alerts.append(f"🔥 <b>{miner['name']}</b> is COOKING ({max_temp}°C)!")
+
+    if extra.get("is_overheat"):
+        alerts.append(f"🔥 <b>{miner['name']}</b> reports OVERHEAT!")
+
+    if extra.get("error_text"):
+        alerts.append(f"⚠️ <b>{miner['name']}</b> error: {clean(extra['error_text'])}")
+
+    alerts.extend(build_pool_alerts(miner["name"], extra.get("pool", {})))
+    alerts.extend(build_chip_alerts(miner["name"], extra.get("chip_stats", {})))
+    return alerts
+
+
+def format_pool_summary(pool):
+    if not pool:
+        return "📡 pool unavailable"
+
+    parts = [
+        f"📡 {clean(pool.get('status', 'Unknown'))}",
+        f"❌ {pool.get('rejected_pct', 0):.2f}%",
+        f"🏆 {format_best_share(pool.get('best_share', 0))}",
+        f"⏱ {clean(pool.get('last_share_time', '?'))}",
+    ]
+
+    gf = pool.get("get_failures")
+    rf = pool.get("remote_failures")
+    if (gf is not None and to_int(gf) > 0) or (rf is not None and to_int(rf) > 0):
+        parts.append(f"🌐 {gf if gf is not None else '?'} / {rf if rf is not None else '?'}")
+
+    return " | ".join(parts)
+
+
+def format_chip_summary(chip_stats):
+    if not chip_stats:
+        return "🧩 chip stats unavailable"
+
+    error_label = "counter" if chip_stats.get("miner_type") == "S21" else "hw"
+    return (
+        f"🧩 avg {chip_stats['avg_chip_hashrate']:.1f} | "
+        f"low {chip_stats['lowest_chip_hashrate']:.1f} | "
+        f"high {chip_stats['highest_chip_hashrate']:.1f} | "
+        f"weak {chip_stats['weak_chip_count']} | "
+        f"{error_label} {format_compact_num(chip_stats['hw_total'])}/{format_compact_num(chip_stats['hw_max_chip'])}"
+    )
+
+
+def format_chain_summary(extra):
+    segments = []
+    for i, val in enumerate(extra["chain_real"]):
+        temp = extra["temps"][i]
+        marker = "x" if val == 0 else ""
+        segments.append(f"C{i} {val:.2f}T {temp}{marker}")
+    return "⛓ " + " | ".join(segments)
+
+
+def summarize_miner_flags(miner):
+    if not miner["online"]:
+        return "offline"
+
+    extra = miner["extra"]
+    flags = []
+
+    dead_chains = [str(i) for i, val in enumerate(extra.get("chain_real", [])) if val == 0]
+    if dead_chains:
+        flags.append(f"dead ch {', '.join(dead_chains)}")
+
+    hot_temps = []
+    for temp_pair in extra.get("temps", []):
+        max_temp = parse_max_temp(temp_pair)
+        if max_temp is not None and max_temp > HIGH_TEMP_THRESHOLD:
+            hot_temps.append(str(max_temp))
+    if hot_temps:
+        flags.append(f"hot {'/'.join(hot_temps)}C")
+
+    if extra.get("is_overheat"):
+        flags.append("overheat")
+
+    pool = extra.get("pool", {})
+    if pool and pool.get("rejected_pct", 0) > HIGH_REJECT_THRESHOLD:
+        flags.append(f"reject {pool['rejected_pct']:.2f}%")
+
+    chip_stats = extra.get("chip_stats", {})
+    weak_chip_count = chip_stats.get("weak_chip_count", 0)
+    if weak_chip_count >= WEAK_CHIP_ALERT_COUNT:
+        flags.append(f"weak chips {weak_chip_count}")
+
+    lowest_chip = chip_stats.get("lowest_chip_hashrate", 0)
+    avg_chip = chip_stats.get("avg_chip_hashrate", 0)
+    if avg_chip > 0 and lowest_chip < avg_chip * VERY_WEAK_CHIP_RATIO:
+        flags.append(f"low chip {lowest_chip:.0f}")
+
+    if extra.get("error_text"):
+        flags.append(clean(extra["error_text"]))
+
+    return " | ".join(flags[:3]) if flags else "stable"
+
+
+def format_miner_section(miner):
+    name = clean(miner["name"])
+    status_icon = format_status_icon(miner["online"])
+    if not miner["online"]:
+        return [f"<b>{status_icon} {name}</b> | OFFLINE", "└ no response from miner", "\u200B"]
+
+    extra = miner["extra"]
+    fan_line = format_fan_line(extra.get("fan", []))
+    fan_value = fan_line.split("] ", 1)[-1] if fan_line and "] " in fan_line else (
+        fan_line.replace("🌀 <b>Fans:</b> ", "") if fan_line else "?"
+    )
+
+    lines = [
+        f"<b>{status_icon} {name}</b> | {extra['real']:.2f} TH | {extra['power']}W | 🌀 {fan_value} | ⏱ {format_uptime_compact(extra['uptime'])}",
+        format_pool_summary(extra.get("pool", {})),
+        format_chip_summary(extra.get("chip_stats", {})),
+        format_chain_summary(extra),
+    ]
+
+    flags = summarize_miner_flags(miner)
+    if flags != "stable":
+        lines.append(f"⚠️ {flags}")
+
+    lines.append("\u200B")
+    return lines
+
+
+def fetch_pools(ip, session=None):
+    session = session or get_session(ip)
+    try:
+        data = get_json(session, f"http://{ip}/api/pools", timeout=MINER_API_TIMEOUT)
         pools = data.get("POOLS", [])
 
         active_pool = None
@@ -93,9 +435,9 @@ def fetch_pools(ip):
         if not active_pool:
             return {}
 
-        accepted = int(get_pool_value(active_pool, "Accepted", "accepted", default=0) or 0)
-        rejected = int(get_pool_value(active_pool, "Rejected", "rejected", default=0) or 0)
-        stale = int(get_pool_value(active_pool, "Stale", "stale", default=0) or 0)
+        accepted = to_int(get_pool_value(active_pool, "Accepted", "accepted", default=0))
+        rejected = to_int(get_pool_value(active_pool, "Rejected", "rejected", default=0))
+        stale = to_int(get_pool_value(active_pool, "Stale", "stale", default=0))
 
         rejected_pct = get_pool_value(active_pool, "Pool Rejected%", default=None)
         stale_pct = get_pool_value(active_pool, "Pool Stale%", default=None)
@@ -105,12 +447,12 @@ def fetch_pools(ip):
         if rejected_pct is None:
             rejected_pct = (rejected / total_shares * 100) if total_shares > 0 else 0.0
         else:
-            rejected_pct = float(rejected_pct or 0)
+            rejected_pct = to_float(rejected_pct)
 
         if stale_pct is None:
             stale_pct = (stale / total_shares * 100) if total_shares > 0 else 0.0
         else:
-            stale_pct = float(stale_pct or 0)
+            stale_pct = to_float(stale_pct)
 
         return {
             "status": get_pool_value(active_pool, "Status", "status", default="Unknown"),
@@ -133,14 +475,14 @@ def fetch_pools(ip):
         }
 
     except Exception as e:
-        print(f"!!! Pools Error on {ip}: {e}")
+        log_error(f"Pools Error on {ip}: {type(e).__name__}: {e}")
         return {}
 
 
-def fetch_chip_stats(ip):
-    session = get_session(ip)
+def fetch_chip_stats(ip, miner_type="Unknown", session=None):
+    session = session or get_session(ip)
     try:
-        data = session.get(f"http://{ip}/api/hashrates", timeout=7).json()
+        data = get_json(session, f"http://{ip}/api/hashrates", timeout=MINER_API_TIMEOUT)
         chips = data.get("chips", [])
         if not chips:
             return {}
@@ -158,8 +500,8 @@ def fetch_chip_stats(ip):
             chain_hashes = []
 
             for chip in chain:
-                hr = float(chip.get("hash_rate", 0) or 0)
-                err = int(chip.get("num_errors", 0) or 0)
+                hr = to_float(chip.get("hash_rate", 0))
+                err = to_int(chip.get("num_errors", 0))
                 chain_hashes.append(hr)
                 chain_errors.append(err)
                 all_hashrates.append(hr)
@@ -172,12 +514,10 @@ def fetch_chip_stats(ip):
 
             weak_in_chain = 0
             for hr in chain_hashes:
-                if chain_avg > 0 and hr < chain_avg * 0.90:
+                if chain_avg > 0 and hr < chain_avg * WEAK_CHIP_RATIO:
                     weak_chip_count += 1
                     weak_in_chain += 1
             weak_chips_by_chain.append(weak_in_chain)
-
-        miner_type = "S21" if ip.endswith(".205") else "S19k"
 
         return {
             "miner_type": miner_type,
@@ -195,21 +535,26 @@ def fetch_chip_stats(ip):
         }
 
     except Exception as e:
-        print(f"!!! Chip stats Error on {ip}: {e}")
+        log_error(f"Chip stats Error on {ip}: {type(e).__name__}: {e}")
         return {}
 
 
-def fetch_msk(ip):
+def fetch_msk(miner):
+    ip = miner["ip"]
     session = get_session(ip)
 
     try:
-        metric_res = session.get(f"http://{ip}/api/chart_metrics/last/720", timeout=7).json()
+        metric_res = get_json(
+            session,
+            f"http://{ip}/api/chart_metrics/last/720",
+            timeout=MINER_API_TIMEOUT,
+        )
         latest = metric_res.get("metrics", [{}])[0]
         chains_m = latest.get("chains", [])
 
-        info = session.get(f"http://{ip}/api/info_app", timeout=5).json()
-        pool_info = fetch_pools(ip)
-        chip_stats = fetch_chip_stats(ip)
+        info = get_json(session, f"http://{ip}/api/info_app", timeout=BLOCKCHAIN_INFO_TIMEOUT)
+        pool_info = fetch_pools(ip, session=session)
+        chip_stats = fetch_chip_stats(ip, miner_type=miner.get("miner_type", "Unknown"), session=session)
 
         chain_real = []
         temps = []
@@ -217,13 +562,13 @@ def fetch_msk(ip):
         total_power = 0
 
         for c in chains_m:
-            chain_real.append(round(c.get("hashrate", 0) / 1000, 2))
+            chain_real.append(round(to_float(c.get("hashrate", 0)) / 1000, 2))
             temps.append(f"{c.get('inlet_temp_max', '?')}/{c.get('outlet_temp_max', '?')}°C")
             fans.append(f"{c.get('fan', 0)}%")
-            total_power += c.get("power", 0)
+            total_power += to_int(c.get("power", 0))
 
         chip_counts = [
-            c.get("asic_num") or (108 if "205" in ip else 77)
+            c.get("asic_num") or miner.get("default_asic_count", 0)
             for c in chains_m
         ]
 
@@ -245,15 +590,17 @@ def fetch_msk(ip):
         }
 
     except Exception as e:
-        print(f"!!! MSK Error on {ip}: {e}")
+        log_error(f"MSK Error on {ip}: {type(e).__name__}: {e}")
         return {"online": False}
 
 
 def get_daily_profit(total_th):
     try:
-        price = float(requests.get("https://blockchain.info/q/24hrprice", timeout=5).text)
-        diff = float(requests.get("https://blockchain.info/q/getdifficulty", timeout=5).text)
+        price = to_float(get_text("https://blockchain.info/q/24hrprice", timeout=BLOCKCHAIN_INFO_TIMEOUT))
+        diff = to_float(get_text("https://blockchain.info/q/getdifficulty", timeout=BLOCKCHAIN_INFO_TIMEOUT))
         reward = 3.125
+        if diff <= 0:
+            return 0, 0
 
         daily_btc = (total_th * 10**12 * reward * 86400) / (diff * 2**32)
         return daily_btc, daily_btc * price
@@ -264,184 +611,63 @@ def get_daily_profit(total_th):
 def format_report(miners):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     out = []
-    total_hr = 0
     alerts = []
+    total_hr = sum(m["extra"]["real"] for m in miners if m["online"])
+    total_power = sum(m["extra"]["power"] for m in miners if m["online"])
+    online_count = sum(1 for m in miners if m["online"])
 
-    for m in miners:
-        if not m["online"]:
-            alerts.append(f"🔴 <b>{m['name']}</b> is OFFLINE!")
-            continue
+    for miner in miners:
+        alerts.extend(build_miner_alerts(miner))
 
-        extra = m["extra"]
-        total_hr += extra["real"]
-
-        for i, val in enumerate(extra["chain_real"]):
-            if val == 0:
-                alerts.append(f"⚠️ <b>{m['name']}</b>: Ch {i} is DEAD!")
-
-        for t_pair in extra.get("temps", []):
-            try:
-                max_t = int(t_pair.replace("°C", "").replace("–", "/").split("/")[-1])
-                if max_t > 80:
-                    alerts.append(f"🔥 <b>{m['name']}</b> is COOKING ({max_t}°C)!")
-            except Exception:
-                pass
-
-        if extra.get("is_overheat"):
-            alerts.append(f"🔥 <b>{m['name']}</b> reports OVERHEAT!")
-
-        if extra.get("error_text"):
-            alerts.append(f"⚠️ <b>{m['name']}</b> error: {clean(extra['error_text'])}")
-
-        pool = extra.get("pool", {})
-        if pool:
-            if pool.get("status") != "Alive":
-                alerts.append(f"📡 <b>{m['name']}</b> pool is {clean(pool.get('status', 'Unknown'))}!")
-
-            if pool.get("rejected_pct", 0) > 1.5:
-                alerts.append(f"❌ <b>{m['name']}</b> high reject rate: {pool['rejected_pct']:.2f}%")
-
-            gf = pool.get("get_failures")
-            rf = pool.get("remote_failures")
-
-            if gf is not None and int(gf) > 0:
-                alerts.append(f"🌐 <b>{m['name']}</b> get failures: {gf}")
-
-            if rf is not None and int(rf) > 0:
-                alerts.append(f"📉 <b>{m['name']}</b> remote failures: {rf}")
-
-        chip_stats = extra.get("chip_stats", {})
-        if chip_stats:
-            if chip_stats.get("weak_chip_count", 0) >= 3:
-                alerts.append(
-                    f"⚠️ <b>{m['name']}</b> has {chip_stats['weak_chip_count']} weak chips"
-                )
-
-            lowest_chip = chip_stats.get("lowest_chip_hashrate", 0)
-            avg_chip = chip_stats.get("avg_chip_hashrate", 0)
-            if avg_chip > 0 and lowest_chip < avg_chip * 0.85:
-                alerts.append(
-                    f"📉 <b>{m['name']}</b> has a very weak chip ({lowest_chip:.2f} GH/s)"
-                )
-
-    if total_hr >= 300:
-        status = "🐺 ALPHA (Full Pack)"
-    elif total_hr >= 200:
-        status = "🐕 BETA (Miner Down)"
-    else:
-        status = "💀 OMEGA (Critical Failure)"
+    status = determine_farm_status(total_hr)
 
     daily_btc, daily_eur = get_daily_profit(total_hr)
 
     header = [
         f"<b>📦 ASIC Chaos Report</b> - {status}",
-        f"🔥 <b>Total Farm:</b> {total_hr:.2f} TH/s",
-        f"💰 <b>Est. Yield:</b> {daily_btc:.6f} BTC (~{daily_eur:.2f}€)"
+        f"🔥 <b>Farm:</b> {total_hr:.2f} TH | {total_power}W | {online_count}/{len(miners)} online",
+        f"💰 <b>Yield:</b> {daily_btc:.6f} BTC (~{daily_eur:.2f}€)"
     ]
 
     if alerts:
         header.append("\n<b>🚨 WOLF ALERTS:</b>")
-        header.extend(alerts)
+        header.extend(alerts[:5])
+        if len(alerts) > 5:
+            header.append(f"…and {len(alerts) - 5} more")
+    else:
+        header.append("\n<b>✅ WOLF ALERTS:</b> Pack stable")
 
-    header.append("\n" + "—" * 15 + "\n")
+    header.append("\n" + "—" * 12 + "\n")
 
-    for m in miners:
-        name, ip = clean(m["name"]), clean(m["ip"])
-        if not m["online"]:
-            out.append(f"<b>{name}</b> (❌ Offline)\n🌐 {ip}\n\u200B")
-            continue
-
-        extra = m["extra"]
-        out.append(f"<b>{name}</b>")
-        out.append(f"⚡ <b>Hash:</b> {extra['real']:.2f} TH/s")
-        out.append(f"🔌 <b>Power:</b> {extra['power']}W")
-
-        pool = extra.get("pool", {})
-        if pool:
-            out.append(f"📡 <b>Pool:</b> {clean(pool.get('status', 'Unknown'))}")
-            out.append(f"❌ <b>Rejects:</b> {pool.get('rejected', 0)} ({pool.get('rejected_pct', 0):.2f}%)")
-            out.append(f"⏱️ <b>Last Share:</b> {clean(pool.get('last_share_time', '?'))}")
-            out.append(f"🏆 <b>Best Share:</b> {format_best_share(pool.get('best_share', 0))}")
-
-            gf = pool.get("get_failures")
-            rf = pool.get("remote_failures")
-            gw = pool.get("getworks")
-
-            if gf is not None or rf is not None:
-                out.append(
-                    f"🌐 <b>Get/Remote Fails:</b> "
-                    f"{gf if gf is not None else '?'} / {rf if rf is not None else '?'}"
-                )
-
-            if gw is not None:
-                out.append(f"📦 <b>Getworks:</b> {gw}")
-        else:
-            out.append("📡 <b>Pool:</b> Unavailable")
-
-        chip_stats = extra.get("chip_stats", {})
-        if chip_stats:
-            out.append(f"🧩 <b>Chip Avg:</b> {chip_stats['avg_chip_hashrate']:.2f} GH/s")
-            out.append(f"📉 <b>Lowest Chip:</b> {chip_stats['lowest_chip_hashrate']:.2f} GH/s")
-            out.append(f"📈 <b>Highest Chip:</b> {chip_stats['highest_chip_hashrate']:.2f} GH/s")
-            out.append(f"⚠️ <b>Weak Chips:</b> {chip_stats['weak_chip_count']}")
-
-            if chip_stats.get("miner_type") == "S21":
-                out.append(f"🪲 <b>Chip Error Counter:</b> {format_big_num(chip_stats['hw_total'])}")
-                out.append(f"🔥 <b>Worst Chip Counter:</b> {format_big_num(chip_stats['hw_max_chip'])}")
-            else:
-                out.append(f"🪲 <b>HW Errors Total:</b> {format_big_num(chip_stats['hw_total'])}")
-                out.append(f"🔥 <b>Worst Chip Errors:</b> {format_big_num(chip_stats['hw_max_chip'])}")
-
-            chain_hw = chip_stats.get("chain_hw_totals", [])
-            chain_low = chip_stats.get("lowest_chip_by_chain", [])
-            if chain_hw and chain_low:
-                out.append("🧬 <b>Chip Chains:</b>")
-                for i in range(min(len(chain_hw), len(chain_low))):
-                    out.append(
-                        f"  ▫️ Ch {i}: err {format_big_num(chain_hw[i])}, "
-                        f"low {chain_low[i]:.2f} GH/s"
-                    )
-
-        fans = extra.get("fan", [])
-        if isinstance(fans, list) and fans:
-            raw_val = str(fans[0]).replace("%", "")
-            try:
-                num_val = int(float(raw_val))
-                bar = "█" * (num_val // 10) + "░" * (10 - (num_val // 10))
-                out.append(f"🌀 <b>Fans:</b> [{bar}] {num_val}%")
-            except Exception:
-                out.append(f"🌀 <b>Fans:</b> {fans}")
-
-        out.append("⛓️ <b>Chains:</b>")
-        for i, val in enumerate(extra["chain_real"]):
-            emoji = "🔷" if i % 2 == 0 else "🔶"
-            temp = extra["temps"][i]
-            status_note = " ⚠️ DEAD" if val == 0 else ""
-            out.append(f"  {emoji} Ch {i}: {val:.2f} TH/s, {temp}{status_note}")
-
-        out.append(f"⏱️ <b>Uptime:</b> {format_uptime(extra['uptime'])}\n\u200B")
+    for miner in miners:
+        out.extend(format_miner_section(miner))
 
     return "\n".join(header + out + [f"📅 {now}"])
 
 
 def send_telegram(msg):
-    requests.post(
-        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"},
-        timeout=15
-    )
+    for chunk in split_telegram_message(msg):
+        response = create_retry_session().post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": chunk, "parse_mode": "HTML"},
+            timeout=TELEGRAM_TIMEOUT
+        )
+        response.raise_for_status()
+
+
+def collect_miner_data():
+    miners = []
+    for miner in MINERS:
+        data = fetch_msk(miner)
+        miners.append({"name": miner["name"], "ip": miner["ip"], **data})
+    return miners
 
 
 def main():
     if not TOKEN or not CHAT_ID:
         raise ValueError("Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID in .env")
 
-    final = []
-    for m in MINERS:
-        data = fetch_msk(m["ip"])
-        final.append({"name": m["name"], "ip": m["ip"], **data})
-
-    send_telegram(format_report(final))
+    send_telegram(format_report(collect_miner_data()))
 
 
 if __name__ == "__main__":
@@ -449,6 +675,5 @@ if __name__ == "__main__":
         try:
             main()
         except Exception as e:
-            with open("asic_stats_error.log", "a", encoding="utf-8") as f:
-                f.write(f"[{datetime.now()}] {e}\n")
-        time.sleep(16200)  # 4.5 hours
+            log_error(f"{type(e).__name__}: {e}")
+        time.sleep(POLL_INTERVAL_SECONDS)
