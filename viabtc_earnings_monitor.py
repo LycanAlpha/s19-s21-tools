@@ -24,7 +24,7 @@ else:
 COIN = "BTC"
 REQUEST_TIMEOUT = int(os.getenv("VIABTC_REQUEST_TIMEOUT", "15"))
 USER_AGENT = os.getenv("VIABTC_USER_AGENT", "Mozilla/5.0")
-COOKIE = os.getenv("VIABTC_BTC_COOKIE") or os.getenv("VIABTC_COOKIE")
+COOKIE = os.getenv("VIABTC_BTC_COOKIE") or os.getenv("VIABTC_COOKIE") or os.getenv("COOKIE")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 TMP_FILE = Path(os.getenv("VIABTC_BTC_EARNINGS_STATE_FILE", BASE_DIR / "via_btc_last_payout_height.txt"))
@@ -49,6 +49,14 @@ def require_env(name):
     if not value:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return value
+
+
+def require_cookie():
+    if COOKIE:
+        return COOKIE
+    raise RuntimeError(
+        "Missing ViaBTC auth cookie. Set one of: VIABTC_BTC_COOKIE, VIABTC_COOKIE, or COOKIE"
+    )
 
 
 def get_headers():
@@ -174,6 +182,7 @@ def get_last_payout_height():
 
 
 def update_last_payout_height(height):
+    TMP_FILE.parent.mkdir(parents=True, exist_ok=True)
     TMP_FILE.write_text(str(height), encoding="utf-8")
 
 
@@ -207,6 +216,7 @@ if __name__ == "__main__":
     try:
         CHAT_ID = require_env("TELEGRAM_CHAT_ID")
         TOKEN = require_env("TELEGRAM_TOKEN")
+        require_cookie()
 
         payouts = fetch_payouts()
         last_known = get_last_payout_height()
