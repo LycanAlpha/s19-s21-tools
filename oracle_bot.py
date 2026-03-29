@@ -49,6 +49,7 @@ FOUNDRY_API = "https://mempool.space/api/v1/mining/pool/foundryusa"
 VIABTC_MEMPOOL_API = "https://mempool.space/api/v1/mining/pool/viabtc"
 ANTPOOL_MEMPOOL_API = "https://mempool.space/api/v1/mining/pool/antpool"
 MEMPOOL_POOLS_24H_API = "https://mempool.space/api/v1/mining/pools/24h"
+MEMPOOL_HASHRATE_1M_API = "https://mempool.space/api/v1/mining/hashrate/1m"
 VIABTC_TRACKER_EXPECTED_BLOCKS_24H = 14.5
 BLOCKS_PER_DAY_TARGET = 144
 TRACKER_CACHE_TTL = 30
@@ -145,6 +146,46 @@ def get_foundry_data():
     except Exception as exc:
         results["error"] = "Foundry API"
         log_api_error("Foundry API", exc)
+
+    return results
+
+def get_network_mining_data():
+    results = {
+        "current_hashrate_eh": None,
+        "current_difficulty_t": None,
+        "difficulty_adjustment_pct": None,
+        "previous_hashrate_eh": None,
+        "trend_pct": None,
+        "error": None,
+    }
+
+    try:
+        data = fetch_json_cached(MEMPOOL_HASHRATE_1M_API, "Mempool Hashrate API", timeout=10)
+        current_hashrate = data.get("currentHashrate")
+        if current_hashrate is not None:
+            results["current_hashrate_eh"] = current_hashrate / 1e18
+
+        difficulty = data.get("currentDifficulty")
+        if difficulty is not None:
+            results["current_difficulty_t"] = difficulty / 1e12
+
+        difficulty_points = data.get("difficulty", [])
+        if difficulty_points:
+            latest = difficulty_points[-1]
+            adjustment = latest.get("adjustment")
+            if adjustment is not None:
+                results["difficulty_adjustment_pct"] = (float(adjustment) - 1) * 100
+
+        hashrates = data.get("hashrates", [])
+        if len(hashrates) >= 2:
+            previous_hashrate = hashrates[-2].get("avgHashrate")
+            if previous_hashrate:
+                results["previous_hashrate_eh"] = previous_hashrate / 1e18
+                if results["current_hashrate_eh"] is not None:
+                    results["trend_pct"] = ((results["current_hashrate_eh"] / results["previous_hashrate_eh"]) - 1) * 100
+    except Exception as exc:
+        results["error"] = "Mempool Hashrate API"
+        log_api_error("Mempool Hashrate API", exc)
 
     return results
 
@@ -263,6 +304,7 @@ async def start_command(update, context):
         "/oracle - Profit stats\n"
         "/pool <name> - Generic pool lookup\n"
         "/compare <a> <b> ... - Compare pools\n"
+        "/network - Mining network pulse\n"
         "/foundry - Foundry dominance\n"
         "/viabtc - ViaBTC pulse\n"
         "/antpool - AntPool pulse\n"
@@ -712,6 +754,69 @@ async def compare_command(update, context):
 
     await update.message.reply_text("\n".join(sections).rstrip(), parse_mode="Markdown")
 
+async def network_command(update, context):
+    network = get_network_mining_data()
+    if network["error"]:
+        await update.message.reply_text(
+            "🧠 Network Pulse\n\n⚠️ Network mining data is unavailable right now. Try again in a bit."
+        )
+        return
+
+    current_hashrate_eh = network["current_hashrate_eh"]
+    current_difficulty_t = network["current_difficulty_t"]
+    difficulty_adjustment_pct = network["difficulty_adjustment_pct"]
+    previous_hashrate_eh = network["previous_hashrate_eh"]
+    trend_pct = network["trend_pct"]
+
+    if current_hashrate_eh >= 1100:
+        status = "🧬 PLANET-SCALE"
+        mood = "⚡ The network is inhaling power plants and exhaling block headers"
+    elif current_hashrate_eh >= 950:
+        status = "🚀 MEGA GRID"
+        mood = "🔥 Hashrate is stacked so high it needs air traffic control"
+    elif current_hashrate_eh >= 800:
+        status = "🟢 HEAVY METAL"
+        mood = "😌 Big steel, big noise, normal apocalypse levels"
+    elif current_hashrate_eh >= 650:
+        status = "🟡 MID STORM"
+        mood = "😐 Strong enough, but not exactly tearing holes in physics"
+    else:
+        status = "🟠 THIN ICE"
+        mood = "🥶 The network still works, but the aura is a little underfed"
+
+    if trend_pct is None:
+        trend = "➡️ No read"
+    elif trend_pct >= 5:
+        trend = "📈 Vertical"
+    elif trend_pct >= 1:
+        trend = "⬆️ Rising"
+    elif trend_pct <= -5:
+        trend = "📉 Clipped"
+    elif trend_pct <= -1:
+        trend = "⬇️ Sliding"
+    else:
+        trend = "➡️ Flat"
+
+    adjustment_line = ""
+    if difficulty_adjustment_pct is not None:
+        adjustment_line = f"\n🧮 **Last Difficulty Adj.:** {difficulty_adjustment_pct:+.2f}%"
+
+    previous_line = ""
+    if previous_hashrate_eh is not None and trend_pct is not None:
+        previous_line = f"\n📚 **Prev Sample:** {previous_hashrate_eh:.1f} EH/s ({trend_pct:+.1f}%, {trend})"
+
+    msg = (
+        f"🧠 **Network Pulse**\n\n"
+        f"🌐 **Current Hashrate:** {current_hashrate_eh:.1f} EH/s\n"
+        f"⛏️ **Current Difficulty:** {current_difficulty_t:.2f} T"
+        f"{adjustment_line}"
+        f"{previous_line}\n\n"
+        f"⚠️ **Status:** {status}\n"
+        f"🎭 **Mood:** {mood}"
+    )
+
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
 
 # ✅ PRICE COMMAND (separate!)
 async def price_command(update, context):
@@ -725,6 +830,7 @@ async def status_command(update, context):
     foundry = get_foundry_data()
     viabtc_tracker = get_viabtc_tracker_data()
     antpool_tracker = get_antpool_tracker_data()
+    network = get_network_mining_data()
 
     def health_line(label, failed):
         return f"{label}: {'offline' if failed else 'ok'}"
@@ -738,6 +844,7 @@ async def status_command(update, context):
         health_line("Foundry API", foundry["error"] is not None),
         health_line("ViaBTC tracker API", viabtc_tracker["error"] is not None),
         health_line("AntPool tracker API", antpool_tracker["error"] is not None),
+        health_line("Mempool Hashrate API", network["error"] is not None),
         f"Price source: {data['price_source']}",
     ]
 
@@ -751,6 +858,7 @@ def main():
     app.add_handler(CommandHandler("oracle", oracle_command))
     app.add_handler(CommandHandler("pool", pool_command))
     app.add_handler(CommandHandler("compare", compare_command))
+    app.add_handler(CommandHandler("network", network_command))
     app.add_handler(CommandHandler("foundry", foundry_command))
     app.add_handler(CommandHandler("viabtc", viabtc_command))
     app.add_handler(CommandHandler("antpool", antpool_command))
