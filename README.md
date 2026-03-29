@@ -1,77 +1,108 @@
----
-
-# 🐺 Lycan ASIC Tools – S19/S21 + ViaBTC Monitoring Scripts
+# Lycan Mining Tools
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)
-![Bash](https://img.shields.io/badge/Bash-Scripts-green?logo=gnu-bash)
-![Antminer](https://img.shields.io/badge/Antminer-S19%2FS21-orange)
-![Telegram](https://img.shields.io/badge/Telegram-Bot-blue?logo=telegram)
+![Telegram](https://img.shields.io/badge/Telegram-Bots-blue?logo=telegram)
 ![ViaBTC](https://img.shields.io/badge/ViaBTC-Monitoring-yellow)
+![Bitcoin](https://img.shields.io/badge/Bitcoin-Mining-orange)
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen)
 
-> A small set of scripts I built so my ASIC miners can scream at me on Telegram instead of me refreshing dashboards like a goblin.
-> Hobby project. Wolf-coded. Works well enough.
+Small mining scripts for watching ViaBTC payouts, blocks, pool stats, and ASIC-side data without living inside dashboards all day.
 
----
+Built for a real hobby-mining setup, not for enterprise polish. It is practical, weird, and Telegram-first.
 
-## ✨ Features
+## What This Repo Does
 
-* ⚡ **ViaBTC Block Monitor**
-  Detects new blocks, assigns luck tiers, generates image cards, and spams Telegram.
+- Watches ViaBTC BTC/BCH earnings and block events
+- Runs a Telegram Oracle bot with pool, compare, and network commands
+- Tracks ViaBTC PPS payouts and sends image-card updates
+- Checks ASIC best-share progress from shell
+- Keeps secrets local in `.env`
 
-* 💰 **PPLNS Earnings Tracker**
-  Fetches ViaBTC payouts and notifies when new profit entries appear.
+## Main Scripts
 
-* 📈 **Best Share Monitor (S19/S21)**
-  Reads miner API, detects improvements, and sends formatted Telegram updates.
+### Telegram bot
 
-* 🔐 **Secrets stored in `.env`**
-  Nothing sensitive is committed to the repo.
+- [oracle_bot.py](/C:/Users/YoungWolf/Documents/miner-scripts/oracle_bot.py)
+  Adaptive Telegram bot for profit stats and mining-pool tracking.
 
-* 🐺 **Built for fun**, not enterprise stability.
+Commands currently available:
 
----
+- `/start` - help menu
+- `/oracle` - ViaBTC luck and profit view
+- `/price` - live BTC price
+- `/status` - API health check
+- `/foundry` - Foundry dominance tracker
+- `/viabtc` - ViaBTC pulse
+- `/antpool` - AntPool pulse
+- `/pool <name>` - generic pool lookup with aliases and typo suggestions
+- `/compare <a> <b> ...` - compare 2-4 pools
+- `/network` - network hashrate and difficulty pulse
 
-## 📁 Files Included
+Examples:
 
+- `/pool antpool`
+- `/pool foundry`
+- `/compare ant via foundry`
+
+### ViaBTC monitors
+
+- [btc_block_monitor.py](/C:/Users/YoungWolf/Documents/miner-scripts/btc_block_monitor.py)
+  Watches ViaBTC BTC blocks, assigns luck tiers, and sends Telegram updates.
+
+- [bch_block_monitor.py](/C:/Users/YoungWolf/Documents/miner-scripts/bch_block_monitor.py)
+  BCH version of the block monitor.
+
+- [viabtc_earnings_monitor.py](/C:/Users/YoungWolf/Documents/miner-scripts/viabtc_earnings_monitor.py)
+  Watches ViaBTC BTC earnings entries.
+
+- [viabtc_bch_earnings_monitor.py](/C:/Users/YoungWolf/Documents/miner-scripts/viabtc_bch_earnings_monitor.py)
+  BCH earnings monitor.
+
+- [viabtc_pps_monitor.py](/C:/Users/YoungWolf/Documents/miner-scripts/viabtc_pps_monitor.py)
+  Watches ViaBTC PPS payouts, retries on API hiccups, avoids backlog floods on first run, and sends Telegram updates with an image card plus mood/status text.
+
+### Miner helpers
+
+- [check_best_share.sh](/C:/Users/YoungWolf/Documents/miner-scripts/check_best_share.sh)
+  Shell script for best-share tracking on miners.
+
+- [ASIC STATS updater.py](/C:/Users/YoungWolf/Documents/miner-scripts/ASIC%20STATS%20updater.py)
+  ASIC stats helper/update script.
+
+## Setup
+
+Install Python dependencies:
+
+```bash
+pip install -r requirements.txt
 ```
-btc_block_monitor.py        # Block-luck monitor + image cards + Telegram alerts
-viabtc_earnings_monitor.py  # ViaBTC PPLNS payout checker
-check_best_share.sh         # Best share monitor for S19/S21 miners
+
+If you are only installing manually, the current Python scripts use:
+
+```bash
+pip install requests Pillow python-dotenv python-telegram-bot
 ```
 
----
+For the shell script, you will want:
 
-## 🔧 Setup
+- `curl`
+- `jq`
+- `openssl`
+- Git Bash, WSL, or another Unix-like shell on Windows
 
-Install Python deps:
-
-```
-pip install requests Pillow python-dotenv
-```
-
-For the bash script, you need:
-
-* curl
-* jq
-* openssl
-* Git Bash or WSL
-
----
-
-## 🔐 Secrets (`.env`)
+## Environment
 
 Copy the template and fill in your own values:
 
-```
+```bash
 cp .env.example .env
 ```
 
-Example template:
+Important values:
 
-```
-TELEGRAM_TOKEN=your_token_here
-TELEGRAM_CHAT_ID=your_chat_id
+```env
+TELEGRAM_TOKEN=your_telegram_token
+TELEGRAM_CHAT_ID=your_telegram_chat_id
 ASIC_USER=root
 ASIC_PASS=root
 VIABTC_BTC_COOKIE=your_viabtc_btc_cookie
@@ -79,51 +110,68 @@ VIABTC_BCH_COOKIE=your_viabtc_bch_cookie
 MINER_SESSION_COOKIE=your_miner_session_cookie
 ```
 
-The real `.env` is git-ignored and should stay local only.
-You can also point scripts to a different file with `MINER_SCRIPTS_ENV_FILE=/path/to/.env`.
+Useful notes:
 
----
+- `.env` is ignored by git and should stay local
+- `MINER_SCRIPTS_ENV_FILE` can point scripts at another env file
+- several scripts support optional log/state/image override env vars
+- the PPS monitor supports `VIABTC_PPS_CHECK_INTERVAL`, retries, and custom log/output paths
 
-## 🚀 Running the Scripts
+## Running Things
 
-### Block monitor
+### Oracle bot
 
+```bash
+python oracle_bot.py
 ```
+
+### BTC block monitor
+
+```bash
 python btc_block_monitor.py
 ```
 
-### Payout tracker
+### BCH block monitor
 
+```bash
+python bch_block_monitor.py
 ```
+
+### BTC earnings monitor
+
+```bash
 python viabtc_earnings_monitor.py
 ```
 
-### Best share monitor
+### BCH earnings monitor
 
+```bash
+python viabtc_bch_earnings_monitor.py
 ```
+
+### PPS monitor
+
+```bash
+python viabtc_pps_monitor.py
+```
+
+### Best share script
+
+```bash
 sh check_best_share.sh
 ```
 
-They all howl at Telegram when something changes.
+## Notes
 
----
+- The Oracle bot mixes ViaBTC endpoints with mempool.space mining APIs
+- Pool stats are live and can change fast
+- The PPS image card uses Pillow, so emoji rendering inside generated images may be inconsistent depending on fonts/platform
+- Most scripts are designed to run in loops and send Telegram alerts when something changes
 
-## 🧠 Why This Exists
+## Why This Exists
 
-Because I wanted alerts without babysitting miner dashboards,
-and because wolf energy at 3am is dangerous and productive.
+Because checking miner dashboards every five minutes is spiritually degrading, and Telegram messages are easier to bully into doing guard duty.
 
----
+## License
 
-## 🐺 Credits
-
-Made by **LycanAlpha**
-Powered by caffeine, dollar-store Ethernet cables, and ASIC fans going brrrrrr.
-
----
-
-## 📜 License
-
-Do whatever you want with it. Fork it, break it, improve it — it’s a hobby project.
-
----
+See [LICENSE](/C:/Users/YoungWolf/Documents/miner-scripts/LICENSE).
