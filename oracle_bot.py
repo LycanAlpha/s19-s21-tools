@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import difflib
 import logging
 import os
 import time
@@ -46,8 +47,12 @@ BLOCK_API = "https://www.viabtc.com/res/pool/BTC/block?page=1&limit=100"
 POOL_API = "https://www.viabtc.com/res/pool/BTC/state"
 FOUNDRY_API = "https://mempool.space/api/v1/mining/pool/foundryusa"
 VIABTC_MEMPOOL_API = "https://mempool.space/api/v1/mining/pool/viabtc"
+ANTPOOL_MEMPOOL_API = "https://mempool.space/api/v1/mining/pool/antpool"
 MEMPOOL_POOLS_24H_API = "https://mempool.space/api/v1/mining/pools/24h"
 VIABTC_TRACKER_EXPECTED_BLOCKS_24H = 14.5
+BLOCKS_PER_DAY_TARGET = 144
+TRACKER_CACHE_TTL = 30
+TRACKER_CACHE = {}
 
 # ===== HELPERS =====
 
@@ -78,6 +83,16 @@ def fetch_json(url, label, timeout=10):
     response = requests.get(url, timeout=timeout)
     response.raise_for_status()
     return response.json()
+
+def fetch_json_cached(url, label, timeout=10, ttl=TRACKER_CACHE_TTL):
+    now = time.time()
+    cached = TRACKER_CACHE.get(url)
+    if cached and (now - cached["ts"]) < ttl:
+        return cached["data"]
+
+    data = fetch_json(url, label, timeout=timeout)
+    TRACKER_CACHE[url] = {"ts": now, "data": data}
+    return data
 
 def fetch_all_data():
     cached_price = get_cached_price()
@@ -134,7 +149,77 @@ def get_foundry_data():
     return results
 
 def get_viabtc_tracker_data():
+    return get_pool_tracker_data(
+        api_url=VIABTC_MEMPOOL_API,
+        pool_slug="viabtc",
+        label="ViaBTC Tracker API",
+    )
+
+def get_antpool_tracker_data():
+    return get_pool_tracker_data(
+        api_url=ANTPOOL_MEMPOOL_API,
+        pool_slug="antpool",
+        label="AntPool Tracker API",
+    )
+
+def get_tracker_data_for_slug(pool_slug):
+    if pool_slug == "viabtc":
+        return get_viabtc_tracker_data()
+    if pool_slug == "antpool":
+        return get_antpool_tracker_data()
+
+    return get_pool_tracker_data(
+        api_url=f"https://mempool.space/api/v1/mining/pool/{pool_slug}",
+        pool_slug=pool_slug,
+        label=f"{pool_slug} Tracker API",
+    )
+
+def normalize_pool_slug(raw_name):
+    if not raw_name:
+        return None
+
+    cleaned = "".join(ch for ch in raw_name.lower() if ch.isalnum())
+    aliases = {
+        "ant": "antpool",
+        "antpool": "antpool",
+        "via": "viabtc",
+        "viabtc": "viabtc",
+        "foundry": "foundryusa",
+        "foundryusa": "foundryusa",
+        "f2": "f2pool",
+        "f2pool": "f2pool",
+        "spider": "spiderpool",
+        "spiderpool": "spiderpool",
+        "mara": "marapool",
+        "marapool": "marapool",
+        "ocean": "ocean",
+        "binance": "binancepool",
+        "binancepool": "binancepool",
+        "luxor": "luxor",
+    }
+    return aliases.get(cleaned, cleaned)
+
+def suggest_pool_names(raw_name):
+    cleaned = "".join(ch for ch in raw_name.lower() if ch.isalnum())
+    known = [
+        "antpool",
+        "foundry",
+        "foundryusa",
+        "viabtc",
+        "f2pool",
+        "spiderpool",
+        "mara",
+        "marapool",
+        "ocean",
+        "binancepool",
+        "luxor",
+    ]
+    matches = difflib.get_close_matches(cleaned, known, n=3, cutoff=0.45)
+    return matches
+
+def get_pool_tracker_data(api_url, pool_slug, label):
     results = {
+        "name": None,
         "share_24h": None,
         "share_1w": None,
         "blocks_24h": None,
@@ -145,25 +230,26 @@ def get_viabtc_tracker_data():
     }
 
     try:
-        data = fetch_json(VIABTC_MEMPOOL_API, "ViaBTC Tracker API", timeout=10)
+        data = fetch_json_cached(api_url, label, timeout=10)
+        results["name"] = data.get("pool", {}).get("name", pool_slug)
         results["share_24h"] = data["blockShare"]["24h"] * 100
         results["share_1w"] = data["blockShare"]["1w"] * 100
         results["blocks_24h"] = data["blockCount"]["24h"]
         results["estimated_hashrate_eh"] = data["estimatedHashrate"] / 1e18
         results["avg_block_health"] = data["avgBlockHealth"]
     except Exception as exc:
-        results["error"] = "ViaBTC Tracker API"
-        log_api_error("ViaBTC Tracker API", exc)
+        results["error"] = label
+        log_api_error(label, exc)
         return results
 
     try:
-        pools_24h = fetch_json(MEMPOOL_POOLS_24H_API, "Mempool Pools 24h API", timeout=10)
-        viabtc_pool = next(
-            (pool for pool in pools_24h.get("pools", []) if pool.get("slug") == "viabtc"),
+        pools_24h = fetch_json_cached(MEMPOOL_POOLS_24H_API, "Mempool Pools 24h API", timeout=10)
+        tracker_pool = next(
+            (pool for pool in pools_24h.get("pools", []) if pool.get("slug") == pool_slug),
             None,
         )
-        if viabtc_pool and viabtc_pool.get("avgFeeDelta") is not None:
-            results["avg_fee_delta"] = float(viabtc_pool["avgFeeDelta"])
+        if tracker_pool and tracker_pool.get("avgFeeDelta") is not None:
+            results["avg_fee_delta"] = float(tracker_pool["avgFeeDelta"])
     except Exception as exc:
         log_api_error("Mempool Pools 24h API", exc)
 
@@ -175,8 +261,11 @@ async def start_command(update, context):
     msg = (
         "🐺 Mining Oracle\n\n"
         "/oracle - Profit stats\n"
+        "/pool <name> - Generic pool lookup\n"
+        "/compare <a> <b> ... - Compare pools\n"
         "/foundry - Foundry dominance\n"
         "/viabtc - ViaBTC pulse\n"
+        "/antpool - AntPool pulse\n"
         "/price - BTC price\n"
         "/status - API health"
     )
@@ -368,6 +457,261 @@ async def viabtc_command(update, context):
 
     await update.message.reply_text(msg, parse_mode="Markdown")
 
+async def antpool_command(update, context):
+    antpool = get_antpool_tracker_data()
+    if antpool["error"]:
+        await update.message.reply_text(
+            "🧠 AntPool Pulse\n\n⚠️ AntPool tracker data is unavailable right now. Try again in a bit."
+        )
+        return
+
+    share_24h = antpool["share_24h"]
+    share_1w = antpool["share_1w"]
+    blocks_24h = antpool["blocks_24h"]
+    hashrate_eh = antpool["estimated_hashrate_eh"]
+    avg_block_health = antpool["avg_block_health"]
+    avg_fee_delta = antpool["avg_fee_delta"]
+
+    expected_blocks_24h = (share_1w / 100) * BLOCKS_PER_DAY_TARGET
+    delta = share_24h - share_1w
+    luck_pct = (blocks_24h / expected_blocks_24h) * 100 if expected_blocks_24h else 0
+
+    if blocks_24h >= 34:
+        status = "🧬 MONOLITH MODE"
+        mood = "⚡ AntPool is chewing through blocks like the mempool insulted its family"
+    elif blocks_24h >= 29:
+        status = "🚀 SIEGE ENGINE"
+        mood = "🔥 Big pool, big pace, absolutely no indoor voice"
+    elif blocks_24h >= 24:
+        status = "🟢 STEADY CRUSH"
+        mood = "😌 Heavy machinery doing heavy machinery things"
+    elif blocks_24h >= 19:
+        status = "🟡 OFF RHYTHM"
+        mood = "😐 Still huge, just not fully locked in"
+    elif blocks_24h >= 14:
+        status = "🟠 BAD ROLL"
+        mood = "🥶 The hashrate is there but the luck receipt is missing"
+    else:
+        status = "🔴 STATUE MODE"
+        mood = "🪦 Too much iron, not enough fireworks"
+
+    if delta >= 2.5:
+        trend = "📈 Taking Turf"
+    elif delta >= 1.0:
+        trend = "⬆️ Pressing Up"
+    elif delta <= -2.5:
+        trend = "📉 Slipped Hard"
+    elif delta <= -1.0:
+        trend = "⬇️ Cooling Off"
+    else:
+        trend = "➡️ Holding Size"
+
+    fee_line = ""
+    if avg_fee_delta is not None:
+        fee_line = f"\n💸 **Fee Delta:** {avg_fee_delta:+.4f} BTC"
+
+    msg = (
+        f"🧠 **AntPool Pulse**\n\n"
+        f"🧱 **Blocks (24h):** {blocks_24h} / {expected_blocks_24h:.1f} expected\n"
+        f"🎯 **Luck:** {luck_pct:.1f}%\n"
+        f"📊 **24h Share:** {share_24h:.1f}%\n"
+        f"📈 **7d Avg:** {share_1w:.1f}%\n"
+        f"📉 **Delta:** {delta:+.1f}% ({trend})\n"
+        f"📡 **Est. Hashrate:** {hashrate_eh:.1f} EH/s\n"
+        f"🩺 **Block Health:** {avg_block_health:.2f}%"
+        f"{fee_line}\n\n"
+        f"⚠️ **Status:** {status}\n"
+        f"🎭 **Mood:** {mood}"
+    )
+
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def pool_command(update, context):
+    if not context.args:
+        await update.message.reply_text(
+            "🧠 Pool Lookup\n\nUsage: /pool antpool\nTry: antpool, foundry, viabtc, f2pool, spiderpool, mara, ocean"
+        )
+        return
+
+    requested = " ".join(context.args)
+    pool_slug = normalize_pool_slug(requested)
+
+    if pool_slug == "foundryusa":
+        await foundry_command(update, context)
+        return
+    if pool_slug == "viabtc":
+        await viabtc_command(update, context)
+        return
+    if pool_slug == "antpool":
+        await antpool_command(update, context)
+        return
+
+    pool_name = requested.strip()
+    tracker = get_pool_tracker_data(
+        api_url=f"https://mempool.space/api/v1/mining/pool/{pool_slug}",
+        pool_slug=pool_slug,
+        label=f"{pool_name} Tracker API",
+    )
+
+    if tracker["error"]:
+        suggestions = suggest_pool_names(requested)
+        suggestion_line = ""
+        if suggestions:
+            suggestion_line = f"\nMaybe try: {', '.join(suggestions)}"
+        await update.message.reply_text(
+            "🧠 Pool Lookup\n\n"
+            f"⚠️ Couldn't find `{requested}` on mempool.\n"
+            "Try: antpool, foundry, viabtc, f2pool, spiderpool, mara, ocean"
+            f"{suggestion_line}",
+            parse_mode="Markdown",
+        )
+        return
+
+    display_name = tracker["name"] or pool_slug
+    share_24h = tracker["share_24h"]
+    share_1w = tracker["share_1w"]
+    blocks_24h = tracker["blocks_24h"]
+    hashrate_eh = tracker["estimated_hashrate_eh"]
+    avg_block_health = tracker["avg_block_health"]
+    avg_fee_delta = tracker["avg_fee_delta"]
+
+    expected_blocks_24h = (share_1w / 100) * BLOCKS_PER_DAY_TARGET
+    delta = share_24h - share_1w
+    luck_pct = (blocks_24h / expected_blocks_24h) * 100 if expected_blocks_24h else 0
+    minutes_per_block = (24 * 60 / expected_blocks_24h) if expected_blocks_24h else 0
+
+    if luck_pct >= 130:
+        status = "🧬 MELTING ASICS"
+        mood = "⚡ This pool is farming blocks like it found the dev console"
+    elif luck_pct >= 112:
+        status = "🚀 OVERCLOCKED"
+        mood = "🔥 Clean momentum, loud fans, immaculate violence"
+    elif luck_pct >= 95:
+        status = "🟢 ON SCRIPT"
+        mood = "😌 Hashrate is behaving and RNG is mostly house-trained"
+    elif luck_pct >= 80:
+        status = "🟡 A LITTLE CURSED"
+        mood = "😐 Not a disaster, just some mild statistical disrespect"
+    elif luck_pct >= 60:
+        status = "🟠 ICE FLOOR"
+        mood = "🥶 Plenty of iron, not enough confetti"
+    else:
+        status = "🔴 SALT MINE"
+        mood = "🪦 The machines are working and luck filed a restraining order"
+
+    if delta >= 2.5:
+        trend = "📈 Expanding"
+    elif delta >= 1.0:
+        trend = "⬆️ Climbing"
+    elif delta <= -2.5:
+        trend = "📉 Pulling Back"
+    elif delta <= -1.0:
+        trend = "⬇️ Cooling"
+    else:
+        trend = "➡️ Flat"
+
+    fee_line = ""
+    if avg_fee_delta is not None:
+        fee_line = f"\n💸 **Fee Delta:** {avg_fee_delta:+.4f} BTC"
+
+    msg = (
+        f"🧠 **{display_name} Pulse**\n\n"
+        f"🧱 **Blocks (24h):** {blocks_24h} / {expected_blocks_24h:.1f} expected\n"
+        f"🎯 **Luck:** {luck_pct:.1f}%\n"
+        f"📊 **24h Share:** {share_24h:.1f}%\n"
+        f"📈 **7d Avg:** {share_1w:.1f}%\n"
+        f"📉 **Delta:** {delta:+.1f}% ({trend})\n"
+        f"📡 **Est. Hashrate:** {hashrate_eh:.1f} EH/s\n"
+        f"⏱️ **Avg Cadence:** {minutes_per_block:.1f} min/block\n"
+        f"🩺 **Block Health:** {avg_block_health:.2f}%"
+        f"{fee_line}\n\n"
+        f"⚠️ **Status:** {status}\n"
+        f"🎭 **Mood:** {mood}"
+    )
+
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def compare_command(update, context):
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "🧠 Pool Compare\n\nUsage: /compare antpool viabtc foundry\nYou can compare 2-4 pools."
+        )
+        return
+
+    normalized = []
+    seen = set()
+    for arg in context.args[:4]:
+        pool_slug = normalize_pool_slug(arg)
+        if pool_slug not in seen:
+            normalized.append(pool_slug)
+            seen.add(pool_slug)
+
+    results = []
+    missing = []
+
+    for pool_slug in normalized:
+        if pool_slug == "foundryusa":
+            foundry = get_foundry_data()
+            if foundry["error"]:
+                missing.append(pool_slug)
+                continue
+
+            delta = foundry["share_24h"] - foundry["share_1w"]
+            results.append(
+                {
+                    "name": "Foundry USA",
+                    "sort_luck": foundry["share_24h"],
+                    "lines": [
+                        f"📊 {foundry['share_24h']:.1f}% 24h share ({foundry['blocks_24h']} blocks)",
+                        f"📈 {foundry['share_1w']:.1f}% 7d avg",
+                        f"📉 {delta:+.1f}% delta",
+                    ],
+                }
+            )
+            continue
+
+        tracker = get_tracker_data_for_slug(pool_slug)
+        if tracker["error"]:
+            missing.append(pool_slug)
+            continue
+
+        expected_blocks_24h = (tracker["share_1w"] / 100) * BLOCKS_PER_DAY_TARGET
+        luck_pct = (tracker["blocks_24h"] / expected_blocks_24h) * 100 if expected_blocks_24h else 0
+        delta = tracker["share_24h"] - tracker["share_1w"]
+
+        results.append(
+            {
+                "name": tracker["name"] or pool_slug,
+                "sort_luck": luck_pct,
+                "lines": [
+                    f"🧱 {tracker['blocks_24h']} / {expected_blocks_24h:.1f} blocks",
+                    f"🎯 {luck_pct:.1f}% luck",
+                    f"📊 {tracker['share_24h']:.1f}% vs {tracker['share_1w']:.1f}%",
+                    f"📡 {tracker['estimated_hashrate_eh']:.1f} EH/s",
+                    f"🩺 {tracker['avg_block_health']:.2f}% health",
+                ],
+            }
+        )
+
+    if not results:
+        await update.message.reply_text(
+            "🧠 Pool Compare\n\n⚠️ Couldn't load any of those pools. Try: antpool, foundry, viabtc, f2pool, spiderpool, mara, ocean"
+        )
+        return
+
+    results.sort(key=lambda item: item["sort_luck"], reverse=True)
+
+    sections = ["🧠 **Pool Compare**", ""]
+    for index, item in enumerate(results, start=1):
+        sections.append(f"**{index}. {item['name']}**")
+        sections.extend(item["lines"])
+        sections.append("")
+
+    if missing:
+        sections.append(f"⚠️ Missing: {', '.join(missing)}")
+
+    await update.message.reply_text("\n".join(sections).rstrip(), parse_mode="Markdown")
+
 
 # ✅ PRICE COMMAND (separate!)
 async def price_command(update, context):
@@ -380,6 +724,7 @@ async def status_command(update, context):
     data = fetch_all_data()
     foundry = get_foundry_data()
     viabtc_tracker = get_viabtc_tracker_data()
+    antpool_tracker = get_antpool_tracker_data()
 
     def health_line(label, failed):
         return f"{label}: {'offline' if failed else 'ok'}"
@@ -392,6 +737,7 @@ async def status_command(update, context):
         health_line("Blocks API", "Blocks API" in data["errors"]),
         health_line("Foundry API", foundry["error"] is not None),
         health_line("ViaBTC tracker API", viabtc_tracker["error"] is not None),
+        health_line("AntPool tracker API", antpool_tracker["error"] is not None),
         f"Price source: {data['price_source']}",
     ]
 
@@ -403,8 +749,11 @@ def main():
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("oracle", oracle_command))
+    app.add_handler(CommandHandler("pool", pool_command))
+    app.add_handler(CommandHandler("compare", compare_command))
     app.add_handler(CommandHandler("foundry", foundry_command))
     app.add_handler(CommandHandler("viabtc", viabtc_command))
+    app.add_handler(CommandHandler("antpool", antpool_command))
     app.add_handler(CommandHandler("price", price_command))
     app.add_handler(CommandHandler("status", status_command))
 
