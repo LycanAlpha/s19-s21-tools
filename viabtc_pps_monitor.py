@@ -3,6 +3,7 @@ import logging
 import os
 import time
 import traceback
+import json
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
@@ -91,20 +92,70 @@ def request_with_retries(method, url, **kwargs):
 # =========================
 # STORAGE
 # =========================
+def serialize_row(row):
+    return {
+        "profit": str(row.get("profit", "")),
+        "fee": str(row.get("fee", "")),
+        "hashrate": str(row.get("hashrate", "")),
+        "start_time": int(row.get("start_time", 0)),
+        "end_time": int(row.get("end_time", 0)),
+    }
+
+
+def build_row_snapshot(rows, limit=200):
+    snapshot = {}
+    sorted_rows = sorted(rows, key=lambda r: int(r.get("id", 0)), reverse=True)
+    for row in sorted_rows[:limit]:
+        row_id = int(row.get("id", 0))
+        snapshot[str(row_id)] = serialize_row(row)
+    return snapshot
+
+
+def read_state():
+    if not TMP_FILE.exists():
+        return {"last_id": 0, "rows": {}}
+
+    try:
+        raw = TMP_FILE.read_text(encoding="utf-8").strip()
+        if not raw:
+            return {"last_id": 0, "rows": {}}
+
+        # Backward compatibility with the old plain-integer state file.
+        if raw.isdigit():
+            return {"last_id": int(raw), "rows": {}}
+
+        data = json.loads(raw)
+        return {
+            "last_id": int(data.get("last_id", 0)),
+            "rows": data.get("rows", {}) if isinstance(data.get("rows", {}), dict) else {},
+        }
+    except Exception:
+        return {"last_id": 0, "rows": {}}
+
+
 def get_last_pps_id():
-    if TMP_FILE.exists():
-        try:
-            with TMP_FILE.open("r", encoding="utf-8") as f:
-                return int(f.read().strip())
-        except Exception:
-            return 0
-    return 0
+    return read_state()["last_id"]
 
 
-def update_last_pps_id(last_id):
+def update_state(last_id, rows):
     TMP_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with TMP_FILE.open("w", encoding="utf-8") as f:
-        f.write(str(last_id))
+    payload = {
+        "last_id": int(last_id),
+        "rows": build_row_snapshot(rows),
+    }
+    TMP_FILE.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+
+
+def detect_changed_rows(rows, previous_snapshot):
+    changed = []
+    for row in rows:
+        row_id = str(int(row.get("id", 0)))
+        current = serialize_row(row)
+        previous = previous_snapshot.get(row_id)
+        if previous and previous != current:
+            changed.append(row)
+    changed.sort(key=lambda r: int(r.get("id", 0)))
+    return changed
 
 
 # =========================
@@ -355,7 +406,7 @@ def create_image_card(new_summary, rolling_profit, rolling_fee, vibe):
 # =========================
 # TELEGRAM
 # =========================
-def send_telegram_notification(new_summary, rolling_profit, rolling_fee):
+def send_telegram_notification(new_summary, rolling_profit, rolling_fee, update_kind="new payouts"):
     token = require_env("TELEGRAM_TOKEN", TOKEN)
     chat_id = require_env("TELEGRAM_CHAT_ID", CHAT_ID)
     vibe = get_pps_vibe(new_summary, rolling_profit)
@@ -369,6 +420,7 @@ def send_telegram_notification(new_summary, rolling_profit, rolling_fee):
 
     caption = (
         f"💰 *ViaBTC PPS Update*\n"
+        f"🧷 Type: `{update_kind}`\n"
         f"⚠️ Status: *{vibe['status']}*\n"
         f"{vibe['verdict']}\n"
         f"🎭 Mood: _{vibe['mood']}_\n"
@@ -427,31 +479,44 @@ def run_once():
             logging.warning("No PPS rows returned.")
             return
 
-        last_seen_id = get_last_pps_id()
+        state = read_state()
+        last_seen_id = state["last_id"]
+        previous_snapshot = state["rows"]
         newest_seen_id = max(int(r.get("id", 0)) for r in all_rows)
 
         if last_seen_id == 0:
-            update_last_pps_id(newest_seen_id)
+            update_state(newest_seen_id, all_rows)
             logging.info("Initialized PPS state at ID %s without sending backlog.", newest_seen_id)
             return
 
         new_rows = [r for r in all_rows if int(r.get("id", 0)) > last_seen_id]
         new_rows.sort(key=lambda r: int(r.get("id", 0)))
+        changed_rows = detect_changed_rows(all_rows, previous_snapshot)
 
         _, rolling_profit, rolling_fee = get_rolling_24h_profit(all_rows)
 
         if new_rows:
             new_summary = build_pps_summary(new_rows)
-            send_telegram_notification(new_summary, rolling_profit, rolling_fee)
+            send_telegram_notification(new_summary, rolling_profit, rolling_fee, update_kind="new payouts")
 
             newest_id = max(int(r.get("id", 0)) for r in new_rows)
-            update_last_pps_id(newest_id)
+            update_state(newest_id, all_rows)
 
             logging.info(
                 f"Sent PPS update for {len(new_rows)} new row(s). "
                 f"Newest ID: {newest_id}. Rolling 24h: {fmt_btc(rolling_profit)} BTC"
             )
+        elif changed_rows:
+            changed_summary = build_pps_summary(changed_rows)
+            send_telegram_notification(changed_summary, rolling_profit, rolling_fee, update_kind="updated payouts")
+            update_state(last_seen_id, all_rows)
+            logging.info(
+                "Sent PPS update for %s changed existing row(s). Rolling 24h: %s BTC",
+                len(changed_rows),
+                fmt_btc(rolling_profit),
+            )
         else:
+            update_state(last_seen_id, all_rows)
             logging.info("No new PPS payouts. Rolling 24h PPS: %s BTC", fmt_btc(rolling_profit))
 
     except Exception:
