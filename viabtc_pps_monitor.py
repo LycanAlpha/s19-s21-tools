@@ -104,10 +104,14 @@ def serialize_row(row):
 
 def build_row_snapshot(rows, limit=200):
     snapshot = {}
-    sorted_rows = sorted(rows, key=lambda r: int(r.get("id", 0)), reverse=True)
+    sorted_rows = sorted(
+        rows,
+        key=lambda r: (int(r.get("end_time", 0)), int(r.get("id", 0))),
+        reverse=True,
+    )
     for row in sorted_rows[:limit]:
-        row_id = int(row.get("id", 0))
-        snapshot[str(row_id)] = serialize_row(row)
+        row_key = get_row_key(row)
+        snapshot[row_key] = serialize_row(row)
     return snapshot
 
 
@@ -146,16 +150,31 @@ def update_state(last_id, rows):
     TMP_FILE.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
 
 
+def get_row_key(row):
+    return f"{int(row.get('end_time', 0))}:{int(row.get('id', 0))}"
+
+
 def detect_changed_rows(rows, previous_snapshot):
     changed = []
     for row in rows:
-        row_id = str(int(row.get("id", 0)))
+        row_id = get_row_key(row)
         current = serialize_row(row)
         previous = previous_snapshot.get(row_id)
         if previous and previous != current:
             changed.append(row)
     changed.sort(key=lambda r: int(r.get("id", 0)))
     return changed
+
+
+def detect_unseen_recent_rows(rows, previous_snapshot, since_ts):
+    unseen = []
+    for row in rows:
+        row_key = get_row_key(row)
+        end_time = int(row.get("end_time", 0))
+        if end_time >= since_ts and row_key not in previous_snapshot:
+            unseen.append(row)
+    unseen.sort(key=lambda r: (int(r.get("end_time", 0)), int(r.get("id", 0))))
+    return unseen
 
 
 # =========================
@@ -483,14 +502,22 @@ def run_once():
         last_seen_id = state["last_id"]
         previous_snapshot = state["rows"]
         newest_seen_id = max(int(r.get("id", 0)) for r in all_rows)
+        newest_end_time = max(int(r.get("end_time", 0)) for r in all_rows)
+        latest_snapshot_end_time = 0
+        if previous_snapshot:
+            latest_snapshot_end_time = max(
+                int(str(row_key).split(":", 1)[0])
+                for row_key in previous_snapshot.keys()
+                if ":" in str(row_key)
+            )
 
         if last_seen_id == 0:
             update_state(newest_seen_id, all_rows)
             logging.info("Initialized PPS state at ID %s without sending backlog.", newest_seen_id)
             return
 
-        new_rows = [r for r in all_rows if int(r.get("id", 0)) > last_seen_id]
-        new_rows.sort(key=lambda r: int(r.get("id", 0)))
+        lookback_start = max(latest_snapshot_end_time - 10800, 0)
+        new_rows = detect_unseen_recent_rows(all_rows, previous_snapshot, lookback_start)
         changed_rows = detect_changed_rows(all_rows, previous_snapshot)
 
         _, rolling_profit, rolling_fee = get_rolling_24h_profit(all_rows)
@@ -499,12 +526,15 @@ def run_once():
             new_summary = build_pps_summary(new_rows)
             send_telegram_notification(new_summary, rolling_profit, rolling_fee, update_kind="new payouts")
 
-            newest_id = max(int(r.get("id", 0)) for r in new_rows)
+            newest_id = max(last_seen_id, max(int(r.get("id", 0)) for r in new_rows))
             update_state(newest_id, all_rows)
 
             logging.info(
-                f"Sent PPS update for {len(new_rows)} new row(s). "
-                f"Newest ID: {newest_id}. Rolling 24h: {fmt_btc(rolling_profit)} BTC"
+                "Sent PPS update for %s new row(s). Latest row end: %s. Stored ID marker: %s. Rolling 24h: %s BTC",
+                len(new_rows),
+                newest_end_time,
+                newest_id,
+                fmt_btc(rolling_profit),
             )
         elif changed_rows:
             changed_summary = build_pps_summary(changed_rows)
@@ -517,7 +547,12 @@ def run_once():
             )
         else:
             update_state(last_seen_id, all_rows)
-            logging.info("No new PPS payouts. Rolling 24h PPS: %s BTC", fmt_btc(rolling_profit))
+            logging.info(
+                "No new PPS payouts. Latest row end: %s. Snapshot anchor end: %s. Rolling 24h PPS: %s BTC",
+                newest_end_time,
+                latest_snapshot_end_time,
+                fmt_btc(rolling_profit),
+            )
 
     except Exception:
         logging.error("run_once failed:\n%s", traceback.format_exc())
