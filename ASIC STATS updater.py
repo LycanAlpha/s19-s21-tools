@@ -325,9 +325,12 @@ def format_pool_summary(pool):
     parts = [
         f"📡 {clean(pool.get('status', 'Unknown'))}",
         f"❌ {pool.get('rejected_pct', 0):.2f}%",
-        f"🏆 {format_best_share(pool.get('best_share', 0))}",
         f"⏱ {clean(pool.get('last_share_time', '?'))}",
     ]
+
+    best_share = to_float(pool.get("best_share", 0))
+    if best_share > 0:
+        parts.insert(2, f"🏆 {format_best_share(best_share)}")
 
     gf = pool.get("get_failures")
     rf = pool.get("remote_failures")
@@ -568,7 +571,8 @@ def fetch_msk(miner):
             f"http://{ip}/api/chart_metrics/last/720",
             timeout=MINER_API_TIMEOUT,
         )
-        latest = metric_res.get("metrics", [{}])[0]
+        metrics = metric_res.get("metrics", [])
+        latest = metrics[-1] if metrics else {}
         chains_m = latest.get("chains", [])
 
         info = get_json(session, f"http://{ip}/api/info_app", timeout=BLOCKCHAIN_INFO_TIMEOUT)
