@@ -284,9 +284,9 @@ def format_braiins_temp(hashboard):
 
 
 def determine_farm_status(total_hr):
-    if total_hr >= 300:
-        return "🐺 ALPHA (Full Pack)"
     if total_hr >= 200:
+        return "🐺 ALPHA (Full Pack)"
+    if total_hr >= 100:
         return "🐕 BETA (Miner Down)"
     return "💀 OMEGA (Critical Failure)"
 
