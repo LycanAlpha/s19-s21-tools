@@ -38,8 +38,7 @@ VERY_WEAK_CHIP_RATIO = 0.85
 WEAK_CHIP_RATIO = 0.90
 
 MINERS = [
-    {"name": "S19k Pro", "ip": "192.168.1.199", "miner_type": "S19k", "default_asic_count": 77},
-    {"name": "S21", "ip": "192.168.1.205", "miner_type": "S21", "default_asic_count": 108},
+    {"name": "S21", "ip": "192.168.1.205", "miner_type": "S21", "firmware": "braiins"},
 ]
 ERROR_LOG_FILE = Path(os.getenv("ASIC_STATS_ERROR_LOG", BASE_DIR / "asic_stats_error.log"))
 
@@ -178,6 +177,12 @@ def get_json(session, url, timeout):
     return response.json()
 
 
+def post_json(session, url, payload, timeout):
+    response = session.post(url, json=payload, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
+
 def get_text(url, timeout):
     response = create_retry_session().get(url, timeout=timeout)
     response.raise_for_status()
@@ -224,6 +229,58 @@ def parse_max_temp(temp_pair):
         return int(str(temp_pair).replace("°C", "").replace("–", "/").split("/")[-1])
     except (TypeError, ValueError):
         return None
+
+
+def format_timestamp(timestamp):
+    if isinstance(timestamp, dict):
+        seconds = timestamp.get("seconds")
+        if seconds is not None:
+            try:
+                return datetime.fromtimestamp(int(seconds)).strftime("%Y-%m-%d %H:%M:%S")
+            except (TypeError, ValueError, OSError):
+                return "?"
+    return clean(timestamp) if timestamp not in (None, "") else "?"
+
+
+def extract_gigahash(value):
+    if not isinstance(value, dict):
+        return 0.0
+    return to_float(value.get("gigahash_per_second"), 0.0)
+
+
+def extract_real_hashrate_th(stats):
+    if not isinstance(stats, dict):
+        return 0.0
+
+    real_hashrate = stats.get("real_hashrate") or {}
+    for key in ("since_restart", "last_15m", "last_5m", "last_1m", "last_30s", "last_15s", "last_5s"):
+        gh = extract_gigahash(real_hashrate.get(key))
+        if gh > 0:
+            return round(gh / 1000, 2)
+
+    nominal = extract_gigahash(stats.get("nominal_hashrate"))
+    if nominal > 0:
+        return round(nominal / 1000, 2)
+
+    return 0.0
+
+
+def format_braiins_temp(hashboard):
+    inlet = to_float(((hashboard.get("lowest_inlet_temp") or {}).get("degree_c")), default=None)
+    outlet = to_float(((hashboard.get("highest_outlet_temp") or {}).get("degree_c")), default=None)
+    chip_sensor = (hashboard.get("highest_chip_temp") or {}).get("temperature") or {}
+    chip = to_float(chip_sensor.get("degree_c"), default=None)
+
+    def temp_str(value):
+        if value is None:
+            return "?"
+        return str(int(round(value)))
+
+    if inlet is not None or outlet is not None:
+        return f"{temp_str(inlet)}/{temp_str(outlet)}°C"
+    if chip is not None:
+        return f"?/{temp_str(chip)}°C"
+    return "?/?°C"
 
 
 def determine_farm_status(total_hr):
@@ -357,7 +414,7 @@ def format_chip_summary(chip_stats):
 def format_chain_summary(extra):
     segments = []
     for i, val in enumerate(extra["chain_real"]):
-        temp = extra["temps"][i]
+        temp = extra["temps"][i] if i < len(extra.get("temps", [])) else "?/?°C"
         marker = "x" if val == 0 else ""
         segments.append(f"C{i} {val:.2f}T {temp}{marker}")
     return "⛓ " + " | ".join(segments)
@@ -617,6 +674,149 @@ def fetch_msk(miner):
         return {"online": False}
 
 
+def get_braiins_session(ip):
+    session = create_retry_session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0",
+        "Referer": f"http://{ip}/",
+        "Accept": "application/json",
+    })
+
+    if ASIC_COOKIE or MINER_SESSION_COOKIE:
+        session.headers["Cookie"] = ASIC_COOKIE or MINER_SESSION_COOKIE
+
+    if not ASIC_USER or not ASIC_PASS:
+        raise ValueError("Missing ASIC_USER or ASIC_PASS for Braiins OS authentication")
+
+    auth = post_json(
+        session,
+        f"http://{ip}/api/v1/auth/login",
+        {"username": ASIC_USER, "password": ASIC_PASS},
+        timeout=MINER_API_TIMEOUT,
+    )
+    token = auth.get("token")
+    if not token:
+        raise ValueError("Braiins login succeeded without returning a token")
+
+    session.headers["Authorization"] = token
+    return session
+
+
+def fetch_braiins_pools(ip, session):
+    try:
+        groups = get_json(session, f"http://{ip}/api/v1/pools/", timeout=MINER_API_TIMEOUT)
+        if not isinstance(groups, list):
+            return {}
+
+        active_pool = None
+        for group in groups:
+            for pool in group.get("pools", []):
+                if pool.get("active") and pool.get("enabled"):
+                    active_pool = pool
+                    break
+            if active_pool:
+                break
+
+        if not active_pool:
+            for group in groups:
+                for pool in group.get("pools", []):
+                    if pool.get("enabled"):
+                        active_pool = pool
+                        break
+                if active_pool:
+                    break
+
+        if not active_pool:
+            return {}
+
+        stats = active_pool.get("stats") or {}
+        accepted = to_int(stats.get("accepted_shares", 0))
+        rejected = to_int(stats.get("rejected_shares", 0))
+        stale = to_int(stats.get("stale_shares", 0))
+        total_shares = accepted + rejected + stale
+        rejected_pct = (rejected / total_shares * 100) if total_shares > 0 else 0.0
+        stale_pct = (stale / total_shares * 100) if total_shares > 0 else 0.0
+
+        return {
+            "status": "Alive" if active_pool.get("alive") else "Dead",
+            "url": active_pool.get("url", ""),
+            "user": active_pool.get("user", ""),
+            "accepted": accepted,
+            "rejected": rejected,
+            "rejected_pct": rejected_pct,
+            "stale": stale,
+            "stale_pct": stale_pct,
+            "last_share_time": format_timestamp(stats.get("last_share_time")),
+            "best_share": stats.get("best_share_str") or stats.get("best_share", 0),
+            "get_failures": None,
+            "remote_failures": None,
+            "getworks": None,
+            "diff": stats.get("last_difficulty", "?"),
+            "last_share_diff": stats.get("last_difficulty", 0),
+            "diff_accepted": 0,
+            "diff_rejected": 0,
+        }
+    except Exception as e:
+        log_error(f"Braiins Pools Error on {ip}: {type(e).__name__}: {e}")
+        return {}
+
+
+def fetch_braiins(miner):
+    ip = miner["ip"]
+
+    try:
+        session = get_braiins_session(ip)
+        details = get_json(session, f"http://{ip}/api/v1/miner/details", timeout=MINER_API_TIMEOUT)
+        stats = get_json(session, f"http://{ip}/api/v1/miner/stats", timeout=MINER_API_TIMEOUT)
+        hashboards_res = get_json(session, f"http://{ip}/api/v1/miner/hw/hashboards", timeout=MINER_API_TIMEOUT)
+        cooling = get_json(session, f"http://{ip}/api/v1/cooling/state", timeout=MINER_API_TIMEOUT)
+        pool_info = fetch_braiins_pools(ip, session)
+
+        hashboards = hashboards_res.get("hashboards", [])
+        chain_real = []
+        temps = []
+        chip_counts = []
+
+        for board in hashboards:
+            chain_real.append(extract_real_hashrate_th(board.get("stats") or {}))
+            temps.append(format_braiins_temp(board))
+            chip_counts.append(to_int(board.get("chips_count", 0)))
+
+        miner_stats = stats.get("miner_stats") or {}
+        power_stats = stats.get("power_stats") or {}
+        approx_power = (power_stats.get("approximated_consumption") or {}).get("watt", 0)
+
+        fan_ratios = []
+        for fan in cooling.get("fans", []):
+            ratio = fan.get("target_speed_ratio")
+            if ratio is not None:
+                fan_ratios.append(max(0, min(100, int(round(float(ratio) * 100)))))
+
+        highest_temp = ((cooling.get("highest_temperature") or {}).get("temperature") or {}).get("degree_c")
+        highest_temp = to_float(highest_temp, 0.0)
+
+        return {
+            "online": True,
+            "extra": {
+                "real": extract_real_hashrate_th(miner_stats),
+                "uptime": details.get("bosminer_uptime_s") or details.get("system_uptime_s", 0),
+                "chain_real": chain_real,
+                "asic_count": chip_counts,
+                "temps": temps,
+                "fan": [f"{max(fan_ratios)}%"] if fan_ratios else [],
+                "power": to_int(approx_power),
+                "error_text": "",
+                "is_overheat": highest_temp > HIGH_TEMP_THRESHOLD,
+                "pool": pool_info,
+                "chip_stats": {},
+            }
+        }
+
+    except Exception as e:
+        log_error(f"Braiins Error on {ip}: {type(e).__name__}: {e}")
+        return {"online": False}
+
+
 def get_daily_profit(total_th):
     try:
         price = to_float(get_text("https://blockchain.info/q/24hrprice", timeout=BLOCKCHAIN_INFO_TIMEOUT))
@@ -681,7 +881,11 @@ def send_telegram(msg):
 def collect_miner_data():
     miners = []
     for miner in MINERS:
-        data = fetch_msk(miner)
+        firmware = miner.get("firmware", "msk").lower()
+        if firmware == "braiins":
+            data = fetch_braiins(miner)
+        else:
+            data = fetch_msk(miner)
         miners.append({"name": miner["name"], "ip": miner["ip"], **data})
     return miners
 

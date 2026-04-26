@@ -31,7 +31,7 @@ CARD_SIZE = (720, 405)
 OVERLAY_BOX = ((28, 22), (692, 370))
 SCAN_LIMIT = 30
 USER_AGENT = os.getenv("VIABTC_USER_AGENT", "Mozilla/5.0")
-ALLOWED_X_TIERS = {"speedrun", "divine", "divine_rainbow"}
+DEFAULT_ALLOWED_X_TIERS = {"speedrun", "divine", "divine_rainbow"}
 DEFAULT_HASHTAGS = "#Bitcoin #BTC #Mining"
 
 FONT_CANDIDATES = {
@@ -197,8 +197,15 @@ def fetch_blocks() -> list[dict]:
     return blocks
 
 
+def get_allowed_x_tiers() -> set[str]:
+    raw_value = os.getenv("X_ALLOWED_TIERS", "")
+    if not raw_value.strip():
+        return DEFAULT_ALLOWED_X_TIERS.copy()
+    return {item.strip() for item in raw_value.split(",") if item.strip()}
+
+
 def should_post_to_x(tier: LuckTier) -> bool:
-    return tier.key in ALLOWED_X_TIERS
+    return tier.key in get_allowed_x_tiers()
 
 
 def build_post_text(block: dict, tier: LuckTier) -> str:
@@ -218,6 +225,26 @@ def build_post_text(block: dict, tier: LuckTier) -> str:
     if hashtags:
         lines.append(hashtags)
     return "\n".join(lines)
+
+
+def describe_tweepy_error(exc: Exception) -> str:
+    parts = [f"{type(exc).__name__}: {exc}"]
+    api_codes = getattr(exc, "api_codes", None)
+    api_messages = getattr(exc, "api_messages", None)
+    response = getattr(exc, "response", None)
+
+    if api_codes:
+        parts.append(f"api_codes={api_codes}")
+    if api_messages:
+        parts.append(f"api_messages={api_messages}")
+    if response is not None:
+        status_code = getattr(response, "status_code", None)
+        text = getattr(response, "text", None)
+        if status_code is not None:
+            parts.append(f"status_code={status_code}")
+        if text:
+            parts.append(f"response_text={text}")
+    return " | ".join(parts)
 
 
 def create_x_clients() -> tuple[tweepy.API, tweepy.Client]:
@@ -242,13 +269,42 @@ def create_x_clients() -> tuple[tweepy.API, tweepy.Client]:
     return v1_api, v2_client
 
 
+def verify_x_access(v1_api: tweepy.API, v2_client: tweepy.Client) -> None:
+    try:
+        user = v1_api.verify_credentials()
+        screen_name = getattr(user, "screen_name", None) if user else None
+        logger.info("Verified X OAuth 1.0a credentials for account: %s", screen_name or "unknown")
+    except Exception as exc:
+        raise RuntimeError(f"X verify_credentials failed: {describe_tweepy_error(exc)}") from exc
+
+    try:
+        me = v2_client.get_me(user_auth=True)
+        username = getattr(getattr(me, "data", None), "username", None)
+        logger.info("Verified X v2 posting context for account: %s", username or "unknown")
+    except Exception as exc:
+        raise RuntimeError(f"X get_me failed: {describe_tweepy_error(exc)}") from exc
+
+
 def post_block_to_x(block: dict, tier: LuckTier, image_path: Path) -> None:
     v1_api, v2_client = create_x_clients()
+    verify_x_access(v1_api, v2_client)
     build_card(block, tier, image_path)
 
-    media = v1_api.media_upload(filename=str(image_path))
     text = build_post_text(block, tier)
-    v2_client.create_tweet(text=text, media_ids=[media.media_id])
+    logger.info("Prepared X image at %s", image_path)
+    logger.info("Prepared X post text: %s", text.replace("\n", " | "))
+
+    try:
+        media = v1_api.media_upload(filename=str(image_path))
+        logger.info("Uploaded media to X with media_id=%s", media.media_id)
+    except Exception as exc:
+        raise RuntimeError(f"X media upload failed: {describe_tweepy_error(exc)}") from exc
+
+    try:
+        response = v2_client.create_tweet(text=text, media_ids=[media.media_id], user_auth=True)
+        logger.info("create_tweet response: %s", getattr(response, "data", response))
+    except Exception as exc:
+        raise RuntimeError(f"X create_tweet failed: {describe_tweepy_error(exc)}") from exc
 
     logger.info("Posted BTC block %s to X", int(block["height"]))
 
@@ -256,6 +312,10 @@ def post_block_to_x(block: dict, tier: LuckTier, image_path: Path) -> None:
 def main() -> None:
     blocks_list = fetch_blocks()
     last_height = get_last_processed_height()
+    allowed_tiers = sorted(get_allowed_x_tiers())
+
+    logger.info("Using X state file: %s", STATE_FILE)
+    logger.info("X posting tiers: %s", ", ".join(allowed_tiers))
 
     new_blocks = [block for block in blocks_list[:SCAN_LIMIT] if int(block["height"]) > last_height]
     new_blocks.sort(key=lambda block: int(block["height"]))
@@ -269,11 +329,25 @@ def main() -> None:
         runtime = int(block["running_time"])
         luck_raw = float(block["luck"]) if block["luck"] is not None else None
         tier = resolve_luck_tier(luck_raw, runtime)
+        luck_percent = f"{luck_raw * 100:.2f}%" if luck_raw is not None else "∞%"
+
+        logger.info(
+            "Evaluating BTC block %s for X: tier=%s luck=%s runtime=%s",
+            block_height,
+            tier.key,
+            luck_percent,
+            format_runtime(runtime),
+        )
 
         if should_post_to_x(tier):
             post_block_to_x(block, tier, IMG_PATH)
         else:
-            logger.info("Skipping BTC block %s for X because tier is %s", block_height, tier.key)
+            logger.info(
+                "Skipping BTC block %s for X because tier '%s' is not in allowed tiers: %s",
+                block_height,
+                tier.key,
+                ", ".join(allowed_tiers),
+            )
 
         update_last_processed_height(block_height)
 
