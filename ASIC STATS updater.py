@@ -39,6 +39,7 @@ WEAK_CHIP_RATIO = 0.90
 
 MINERS = [
     {"name": "S21", "ip": "192.168.1.205", "miner_type": "S21", "firmware": "braiins"},
+    {"name": "S19k Pro 115T", "ip": "192.168.1.208", "miner_type": "S19k Pro", "firmware": "braiins"},
 ]
 ERROR_LOG_FILE = Path(os.getenv("ASIC_STATS_ERROR_LOG", BASE_DIR / "asic_stats_error.log"))
 
