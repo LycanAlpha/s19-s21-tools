@@ -2,6 +2,7 @@
 import logging
 import os
 import random
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -33,10 +34,16 @@ STATE_FILE = Path(
     or BASE_DIR / "last_best_share_2.txt"
 )
 
-MINER = {
-    "name": os.getenv("BEST_SHARE_MINER_NAME", "S21"),
-    "ip": os.getenv("BEST_SHARE_MINER_IP", "192.168.1.205"),
-}
+MINERS = [
+    {
+        "name": os.getenv("BEST_SHARE_MINER_NAME", "S21"),
+        "ip": os.getenv("BEST_SHARE_MINER_IP", "192.168.1.205"),
+    },
+    {
+        "name": os.getenv("BEST_SHARE_MINER_NAME_2", "S19k Pro 115T"),
+        "ip": os.getenv("BEST_SHARE_MINER_IP_2", "192.168.1.208"),
+    },
+]
 
 CARD_SIZE = (720, 405)
 OVERLAY_BOX = ((28, 22), (692, 370))
@@ -175,19 +182,36 @@ def fetch_best_share(miner: dict) -> dict:
     }
 
 
-def get_last_best_share() -> int:
+def get_last_best_shares() -> dict[str, int]:
     if not STATE_FILE.exists():
-        return 0
+        return {}
     try:
-        return int(STATE_FILE.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
+        raw_state = STATE_FILE.read_text(encoding="utf-8").strip()
+        if not raw_state:
+            return {}
+
+        payload = json.loads(raw_state)
+        if isinstance(payload, dict):
+            return {str(name): to_int(value, 0) for name, value in payload.items()}
+    except json.JSONDecodeError:
+        try:
+            legacy_value = int(STATE_FILE.read_text(encoding="utf-8").strip())
+            primary_name = MINERS[0]["name"]
+            return {primary_name: legacy_value}
+        except (OSError, ValueError):
+            logger.warning("Could not parse previous best share from %s", STATE_FILE)
+            return {}
+    except OSError:
         logger.warning("Could not parse previous best share from %s", STATE_FILE)
-        return 0
+        return {}
+
+    logger.warning("Unexpected best share state format in %s", STATE_FILE)
+    return {}
 
 
-def update_last_best_share(best_share: int) -> None:
+def update_last_best_shares(best_shares: dict[str, int]) -> None:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(str(best_share), encoding="utf-8")
+    STATE_FILE.write_text(json.dumps(best_shares, sort_keys=True), encoding="utf-8")
 
 
 def resolve_share_tier(best_share: int) -> ShareTier:
@@ -271,36 +295,44 @@ def send_photo(chat_id: str, token: str, image_path: Path, caption: str) -> None
 def main() -> None:
     chat_id = require_env("TELEGRAM_CHAT_ID")
     token = require_env("TELEGRAM_TOKEN")
+    last_shares = get_last_best_shares()
+    updated = False
 
-    current = fetch_best_share(MINER)
-    best_share = current["best_share"]
-    last_share = get_last_best_share()
+    for miner in MINERS:
+        current = fetch_best_share(miner)
+        best_share = current["best_share"]
+        last_share = last_shares.get(miner["name"], 0)
 
-    if best_share <= 0:
-        raise RuntimeError("Miner returned an empty best share")
+        if best_share <= 0:
+            raise RuntimeError(f"{miner['name']} returned an empty best share")
 
-    if best_share <= last_share:
-        logger.info(
-            "No improvement for %s: current=%s previous=%s",
-            MINER["name"],
-            best_share,
-            last_share,
+        if best_share <= last_share:
+            logger.info(
+                "No improvement for %s: current=%s previous=%s",
+                miner["name"],
+                best_share,
+                last_share,
+            )
+            continue
+
+        last_shares[miner["name"]] = best_share
+        updated = True
+
+        miner_payload = {
+            "name": miner["name"],
+            "hashrate_th": current["hashrate_th"],
+        }
+        build_card(miner_payload, best_share, last_share, IMG_PATH)
+
+        caption = (
+            f"{resolve_share_tier(best_share).icon} {miner['name']} new best share\n"
+            f"{format_compact(best_share)} over {format_compact(last_share)}"
         )
-        return
+        send_photo(chat_id, token, IMG_PATH, caption)
+        logger.info("Sent best share alert for %s: %s", miner["name"], best_share)
 
-    update_last_best_share(best_share)
-    miner_payload = {
-        "name": MINER["name"],
-        "hashrate_th": current["hashrate_th"],
-    }
-    build_card(miner_payload, best_share, last_share, IMG_PATH)
-
-    caption = (
-        f"{resolve_share_tier(best_share).icon} {MINER['name']} new best share\n"
-        f"{format_compact(best_share)} over {format_compact(last_share)}"
-    )
-    send_photo(chat_id, token, IMG_PATH, caption)
-    logger.info("Sent best share alert for %s: %s", MINER["name"], best_share)
+    if updated:
+        update_last_best_shares(last_shares)
 
 
 if __name__ == "__main__":
