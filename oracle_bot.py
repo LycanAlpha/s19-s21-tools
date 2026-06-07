@@ -447,7 +447,9 @@ async def viabtc_command(update, context):
     avg_fee_delta = viabtc["avg_fee_delta"]
 
     delta = share_24h - share_1w
-    luck_pct = (blocks_24h / VIABTC_TRACKER_EXPECTED_BLOCKS_24H) * 100
+    expected_blocks_24h = VIABTC_TRACKER_EXPECTED_BLOCKS_24H
+    luck_pct = (blocks_24h / expected_blocks_24h) * 100
+    minutes_per_block = (24 * 60 / expected_blocks_24h) if expected_blocks_24h else 0
 
     if blocks_24h >= 19:
         status = "🧬 REALITY TEARING"
@@ -485,12 +487,13 @@ async def viabtc_command(update, context):
 
     msg = (
         f"🧠 **ViaBTC Pulse**\n\n"
-        f"🧱 **Blocks (24h):** {blocks_24h} / {VIABTC_TRACKER_EXPECTED_BLOCKS_24H:.1f} expected\n"
+        f"🧱 **Blocks (24h):** {blocks_24h} / {expected_blocks_24h:.1f} expected\n"
         f"🎯 **Luck:** {luck_pct:.1f}%\n"
         f"📊 **24h Share:** {share_24h:.1f}%\n"
         f"📈 **7d Avg:** {share_1w:.1f}%\n"
         f"📉 **Delta:** {delta:+.1f}% ({trend})\n"
         f"📡 **Est. Hashrate:** {hashrate_eh:.1f} EH/s\n"
+        f"⏱️ **Avg Cadence:** {minutes_per_block:.1f} min/block\n"
         f"🩺 **Block Health:** {avg_block_health:.2f}%"
         f"{fee_line}\n\n"
         f"⚠️ **Status:** {status}\n"
