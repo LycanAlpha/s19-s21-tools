@@ -196,6 +196,13 @@ def get_viabtc_tracker_data():
         label="ViaBTC Tracker API",
     )
 
+def get_foundry_tracker_data():
+    return get_pool_tracker_data(
+        api_url=FOUNDRY_API,
+        pool_slug="foundryusa",
+        label="Foundry Tracker API",
+    )
+
 def get_antpool_tracker_data():
     return get_pool_tracker_data(
         api_url=ANTPOOL_MEMPOOL_API,
@@ -204,6 +211,8 @@ def get_antpool_tracker_data():
     )
 
 def get_tracker_data_for_slug(pool_slug):
+    if pool_slug == "foundryusa":
+        return get_foundry_tracker_data()
     if pool_slug == "viabtc":
         return get_viabtc_tracker_data()
     if pool_slug == "antpool":
@@ -380,7 +389,7 @@ async def oracle_command(update, context):
 
 # 🆕 FOUNDRY TRACKER
 async def foundry_command(update, context):
-    foundry = get_foundry_data()
+    foundry = get_foundry_tracker_data()
     if foundry["error"]:
         await update.message.reply_text(
             "🧠 Foundry Tracker\n\n⚠️ Foundry data is unavailable right now. Try again in a bit."
@@ -390,8 +399,14 @@ async def foundry_command(update, context):
     share_24h = foundry["share_24h"]
     share_1w = foundry["share_1w"]
     blocks_24h = foundry["blocks_24h"]
+    hashrate_eh = foundry["estimated_hashrate_eh"]
+    avg_block_health = foundry["avg_block_health"]
+    avg_fee_delta = foundry["avg_fee_delta"]
 
+    expected_blocks_24h = (share_1w / 100) * BLOCKS_PER_DAY_TARGET
     delta = share_24h - share_1w
+    luck_pct = (blocks_24h / expected_blocks_24h) * 100 if expected_blocks_24h else 0
+    minutes_per_block = (24 * 60 / expected_blocks_24h) if expected_blocks_24h else 0
 
     if share_1w >= 45:
         status = "🚨 GODZILLA MODE"
@@ -420,11 +435,21 @@ async def foundry_command(update, context):
     else:
         trend = "➡️ Holding The Line"
 
+    fee_line = ""
+    if avg_fee_delta is not None:
+        fee_line = f"\n💸 **Fee Delta:** {avg_fee_delta:+.4f} BTC"
+
     msg = (
         f"🧠 **Foundry Tracker**\n\n"
-        f"📊 **24h:** {share_24h:.1f}% ({blocks_24h} blocks)\n"
-        f"📈 **7d avg:** {share_1w:.1f}%\n"
-        f"📉 **Delta:** {delta:+.1f}% ({trend})\n\n"
+        f"🧱 **Blocks (24h):** {blocks_24h} / {expected_blocks_24h:.1f} expected\n"
+        f"🎯 **Luck:** {luck_pct:.1f}%\n"
+        f"📊 **24h Share:** {share_24h:.1f}%\n"
+        f"📈 **7d Avg:** {share_1w:.1f}%\n"
+        f"📉 **Delta:** {delta:+.1f}% ({trend})\n"
+        f"📡 **Est. Hashrate:** {hashrate_eh:.1f} EH/s\n"
+        f"⏱️ **Avg Cadence:** {minutes_per_block:.1f} min/block\n"
+        f"🩺 **Block Health:** {avg_block_health:.2f}%"
+        f"{fee_line}\n\n"
         f"⚠️ **Status:** {status}\n"
         f"🎭 **Mood:** {mood}"
     )
@@ -695,26 +720,6 @@ async def compare_command(update, context):
     missing = []
 
     for pool_slug in normalized:
-        if pool_slug == "foundryusa":
-            foundry = get_foundry_data()
-            if foundry["error"]:
-                missing.append(pool_slug)
-                continue
-
-            delta = foundry["share_24h"] - foundry["share_1w"]
-            results.append(
-                {
-                    "name": "Foundry USA",
-                    "sort_luck": foundry["share_24h"],
-                    "lines": [
-                        f"📊 {foundry['share_24h']:.1f}% 24h share ({foundry['blocks_24h']} blocks)",
-                        f"📈 {foundry['share_1w']:.1f}% 7d avg",
-                        f"📉 {delta:+.1f}% delta",
-                    ],
-                }
-            )
-            continue
-
         tracker = get_tracker_data_for_slug(pool_slug)
         if tracker["error"]:
             missing.append(pool_slug)
