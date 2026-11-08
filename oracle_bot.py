@@ -55,6 +55,31 @@ BLOCKS_PER_DAY_TARGET = 144
 TRACKER_CACHE_TTL = 30
 TRACKER_CACHE = {}
 
+# Anomaly scale: minimum 24h block count, mood, and header emoji.
+ORACLE_MOODS = (
+    (40, "🌀 REALITY REBOOT", "💥"),
+    (35, "☄️ HASH EXTINCTION EVENT", "☄️"),
+    (30, "🧬 SIMULATION BREAK", "⚠️"),
+    (28, "👁️ THE VOID BLINKED", "👁️"),
+    (26, "🦑 ELDRITCH LUCK", "🧿"),
+    (24, "⚡ Thunder Harvest", "⚡"),
+    (22, "🔱 DIVINE ALIGNMENT", "🔱"),
+    (20, "🌠 Meteor Shower", "🌠"),
+    (18, "🌌 Cosmic Overdrive", "✨"),
+    (16, "🔥 Afterburners On", "🔥"),
+    (14, "🚀 Minting Legend", "🔥"),
+    (13, "🎯 On Pace", "🎯"),
+    (11, "✅ Steady Gains", "🟢"),
+    (9, "😐 Mild Disappointment", "🟡"),
+    (7, "📉 Pool Depression", "💀"),
+    (5, "🪦 Graveyard Shift", "⚰️"),
+    (3, "💀 RNG Funeral", "🕯️"),
+    (2, "🥶 Deep Freeze", "🥶"),
+    (1, "🧊 Absolute Zero", "❄️"),
+    (0, "🕳️ Event Horizon", "🌑"),
+)
+
+
 # ===== HELPERS =====
 
 def safe_int(val, default=0):
@@ -330,31 +355,9 @@ async def oracle_command(update, context):
     cutoff = int(time.time()) - 86400
     count = len([b for b in blocks if safe_int(b.get("time")) >= cutoff])
 
-    # 🌌 THE ANOMALY SCALE (your original style)
-    if count >= 30:
-        mood, emoji = "🧬 SIMULATION BREAK", "⚠️"
-    elif count >= 26:
-        mood, emoji = "🦑 ELDRITCH LUCK", "🧿"
-    elif count >= 22:
-        mood, emoji = "🔱 DIVINE ALIGNMENT", "🔱"
-    elif count >= 18:
-        mood, emoji = "🌌 Cosmic Overdrive", "✨"
-    elif count >= 14:
-        mood, emoji = "🚀 Minting Legend", "🔥"
-    elif count >= 11:
-        mood, emoji = "✅ Steady Gains", "🟢"
-    elif count >= 9:
-        mood, emoji = "😐 Mild Disappointment", "🟡"
-    elif count >= 7:
-        mood, emoji = "📉 Pool Depression", "💀"
-    elif count >= 5:
-        mood, emoji = "🪦 Graveyard Shift", "⚰️"
-    elif count >= 3:
-        mood, emoji = "💀 RNG Funeral", "🕯️"
-    elif count >= 1:
-        mood, emoji = "🧊 Absolute Zero", "❄️"
-    else:
-        mood, emoji = "🕳️ Event Horizon", "🌑"
+    mood, emoji = next(
+        (label, icon) for minimum, label, icon in ORACLE_MOODS if count >= minimum
+    )
 
     pool_hr_eh = float(data["pool"].get("hashrate", 94e18)) / 1e18
     luck_pct = (count / EXPECTED_BLOCKS_24H) * 100
