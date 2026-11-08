@@ -653,12 +653,18 @@ async def pool_command(update, context):
     luck_pct = (blocks_24h / expected_blocks_24h) * 100 if expected_blocks_24h else 0
     minutes_per_block = (24 * 60 / expected_blocks_24h) if expected_blocks_24h else 0
 
-    if luck_pct >= 130:
+    if luck_pct >= 150:
+        status = "🌠 BLOCK STORM"
+        mood = "⚡ Blocks are coming in faster than the pool can name them"
+    elif luck_pct >= 130:
         status = "🧬 MELTING ASICS"
         mood = "⚡ This pool is farming blocks like it found the dev console"
     elif luck_pct >= 112:
         status = "🚀 OVERCLOCKED"
         mood = "🔥 Clean momentum, loud fans, immaculate violence"
+    elif luck_pct >= 105:
+        status = "🍀 TAILWIND"
+        mood = "😎 RNG threw in a few extra blocks"
     elif luck_pct >= 95:
         status = "🟢 ON SCRIPT"
         mood = "😌 Hashrate is behaving and RNG is mostly house-trained"
@@ -668,6 +674,9 @@ async def pool_command(update, context):
     elif luck_pct >= 60:
         status = "🟠 ICE FLOOR"
         mood = "🥶 Plenty of iron, not enough confetti"
+    elif luck_pct < 40 and expected_blocks_24h:
+        status = "🏜️ BLOCK DROUGHT"
+        mood = "🥀 The ASICs are sending postcards from the desert"
     else:
         status = "🔴 SALT MINE"
         mood = "🪦 The machines are working and luck filed a restraining order"
