@@ -34,7 +34,9 @@ logging.basicConfig(
 )
 
 # ===== CONSTANTS =====
-EXPECTED_BLOCKS_24H = 13.4      
+# ViaBTC snapshot: about 100 minutes per block at 100% luck.
+VIABTC_EXPECTED_BLOCKS_24H = 14.5
+VIABTC_FALLBACK_HASHRATE = 109.12e18
 PPS_BASELINE = 0.0001796        
 MY_SHARE_PER_BLOCK = 0.00001340 
 DR_PEPPER_EUR = 1.30            
@@ -50,28 +52,27 @@ VIABTC_MEMPOOL_API = "https://mempool.space/api/v1/mining/pool/viabtc"
 ANTPOOL_MEMPOOL_API = "https://mempool.space/api/v1/mining/pool/antpool"
 MEMPOOL_POOLS_24H_API = "https://mempool.space/api/v1/mining/pools/24h"
 MEMPOOL_HASHRATE_1M_API = "https://mempool.space/api/v1/mining/hashrate/1m"
-VIABTC_TRACKER_EXPECTED_BLOCKS_24H = 14.5
 BLOCKS_PER_DAY_TARGET = 144
 TRACKER_CACHE_TTL = 30
 TRACKER_CACHE = {}
 
 # Anomaly scale: minimum 24h block count, mood, and header emoji.
 ORACLE_MOODS = (
-    (40, "🌀 REALITY REBOOT", "💥"),
-    (35, "☄️ HASH EXTINCTION EVENT", "☄️"),
-    (30, "🧬 SIMULATION BREAK", "⚠️"),
-    (28, "👁️ THE VOID BLINKED", "👁️"),
-    (26, "🦑 ELDRITCH LUCK", "🧿"),
-    (24, "⚡ Thunder Harvest", "⚡"),
-    (22, "🔱 DIVINE ALIGNMENT", "🔱"),
-    (20, "🌠 Meteor Shower", "🌠"),
-    (18, "🌌 Cosmic Overdrive", "✨"),
-    (16, "🔥 Afterburners On", "🔥"),
-    (14, "🚀 Minting Legend", "🔥"),
-    (13, "🎯 On Pace", "🎯"),
-    (11, "✅ Steady Gains", "🟢"),
-    (9, "😐 Mild Disappointment", "🟡"),
-    (7, "📉 Pool Depression", "💀"),
+    (43, "🌀 REALITY REBOOT", "💥"),
+    (38, "☄️ HASH EXTINCTION EVENT", "☄️"),
+    (32, "🧬 SIMULATION BREAK", "⚠️"),
+    (30, "👁️ THE VOID BLINKED", "👁️"),
+    (28, "🦑 ELDRITCH LUCK", "🧿"),
+    (26, "⚡ Thunder Harvest", "⚡"),
+    (24, "🔱 DIVINE ALIGNMENT", "🔱"),
+    (22, "🌠 Meteor Shower", "🌠"),
+    (19, "🌌 Cosmic Overdrive", "✨"),
+    (17, "🔥 Afterburners On", "🔥"),
+    (15, "🚀 Minting Legend", "🔥"),
+    (14, "🎯 On Pace", "🎯"),
+    (12, "✅ Steady Gains", "🟢"),
+    (10, "😐 Mild Disappointment", "🟡"),
+    (8, "📉 Pool Depression", "💀"),
     (5, "🪦 Graveyard Shift", "⚰️"),
     (3, "💀 RNG Funeral", "🕯️"),
     (2, "🥶 Deep Freeze", "🥶"),
@@ -124,7 +125,7 @@ def fetch_all_data():
     cached_price = get_cached_price()
     results = {
         "blocks": [],
-        "pool": {"hashrate": "94000000000000000000"},
+        "pool": {"hashrate": VIABTC_FALLBACK_HASHRATE},
         "price": cached_price,
         "errors": [],
         "price_source": "cache",
@@ -359,8 +360,8 @@ async def oracle_command(update, context):
         (label, icon) for minimum, label, icon in ORACLE_MOODS if count >= minimum
     )
 
-    pool_hr_eh = float(data["pool"].get("hashrate", 94e18)) / 1e18
-    luck_pct = (count / EXPECTED_BLOCKS_24H) * 100
+    pool_hr_eh = float(data["pool"].get("hashrate", VIABTC_FALLBACK_HASHRATE)) / 1e18
+    luck_pct = (count / VIABTC_EXPECTED_BLOCKS_24H) * 100
     pplns_total = count * MY_SHARE_PER_BLOCK
     daily_eur = pplns_total * btc_price * 0.92
     perf = ((pplns_total / PPS_BASELINE) - 1) * 100
@@ -375,7 +376,7 @@ async def oracle_command(update, context):
 
     msg = (
         f"🧠 **Adaptive Mining Oracle** {emoji}\n\n"
-        f"🧱 **Blocks (24h):** {count}\n"
+        f"🧱 **Blocks (24h):** {count} / {VIABTC_EXPECTED_BLOCKS_24H:.1f} expected\n"
         f"🎯 **Pool Luck:** {luck_pct:.1f}%\n"
         f"📡 **Hashrate:** {pool_hr_eh:.2f} EH/s\n\n"
         f"💰 **BTC Price:** ${btc_price:,.0f}\n"
@@ -475,7 +476,7 @@ async def viabtc_command(update, context):
     avg_fee_delta = viabtc["avg_fee_delta"]
 
     delta = share_24h - share_1w
-    expected_blocks_24h = VIABTC_TRACKER_EXPECTED_BLOCKS_24H
+    expected_blocks_24h = VIABTC_EXPECTED_BLOCKS_24H
     luck_pct = (blocks_24h / expected_blocks_24h) * 100
     minutes_per_block = (24 * 60 / expected_blocks_24h) if expected_blocks_24h else 0
 
