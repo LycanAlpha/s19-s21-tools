@@ -28,6 +28,20 @@ BLOCK_API = "https://www.viabtc.com/res/pool/BTC/block?page=1&limit=100"
 PAYOUT_API = "https://www.viabtc.com/res/profit/BTC/pplns?page=1&limit=50"
 PPS_BASELINE = float(os.getenv("ADAPTIVE_ORACLE_PPS_BASELINE", "0.0001992"))
 
+# Minimum block counts, highest first.
+BLOCK_MOODS = (
+    (26, "🌕 Moonshot"),
+    (22, "🔥 Pool on fire"),
+    (18, "🚀 PRINTING"),
+    (15, "📈 Good run"),
+    (12, "🙂 Normal luck"),
+    (10, "🐢 A little sluggish"),
+    (8, "⚠️ Slow day"),
+    (4, "💀 Pool depression"),
+    (1, "🏜️ Block drought"),
+    (0, "🧊 Zero-block freeze"),
+)
+
 
 def require_env(name, value):
     if value:
@@ -96,14 +110,7 @@ if __name__ == "__main__":
 
         verdict = "🟢 Stay on PPLNS" if pplns_24h > PPS_BASELINE else "🔴 Switch to PPS"
 
-        if block_count >= 18:
-            mood = "🚀 PRINTING"
-        elif block_count >= 12:
-            mood = "🙂 Normal luck"
-        elif block_count >= 8:
-            mood = "⚠️ Slow day"
-        else:
-            mood = "💀 Pool depression"
+        mood = next(label for minimum, label in BLOCK_MOODS if block_count >= minimum)
 
         message = (
             "🧠 Adaptive Mining Oracle\n\n"
