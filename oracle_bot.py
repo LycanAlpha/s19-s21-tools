@@ -37,8 +37,10 @@ logging.basicConfig(
 # ViaBTC snapshot: about 100 minutes per block at 100% luck.
 VIABTC_EXPECTED_BLOCKS_24H = 14.5
 VIABTC_FALLBACK_HASHRATE = 109.12e18
-PPS_BASELINE = 0.0001796        
-MY_SHARE_PER_BLOCK = 0.00001340 
+# ViaBTC snapshot (2026-11-10): PPS+ calculator at 380 TH/s and 3% fee,
+# and mean of six recent PPLNS mining credits.
+PPS_BASELINE = 0.00015726
+MY_SHARE_PER_BLOCK = 0.00001055
 DR_PEPPER_EUR = 1.30            
 
 PRICE_CACHE_FILE = Path(os.getenv("ORACLE_BOT_PRICE_CACHE_FILE", BASE_DIR / "last_known_price.txt"))
