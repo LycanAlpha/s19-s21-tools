@@ -63,7 +63,7 @@ TRACKER_CACHE = {}
 # Anomaly scale: minimum blocks per day, mood, and header emoji.
 ORACLE_MOODS = (
     (43, "🌀 REALITY REBOOT", "💥"),
-    (38, "☄️ HASH EXTINCTION EVENT", "☄️"),
+    (38, "☄️ HASH STORM", "☄️"),
     (32, "🧬 SIMULATION BREAK", "⚠️"),
     (30, "👁️ THE VOID BLINKED", "👁️"),
     (28, "🦑 ELDRITCH LUCK", "🧿"),
@@ -72,15 +72,15 @@ ORACLE_MOODS = (
     (22, "🌠 Meteor Shower", "🌠"),
     (19, "🌌 Cosmic Overdrive", "✨"),
     (17, "🔥 Afterburners On", "🔥"),
-    (15, "🚀 Minting Legend", "🔥"),
-    (14, "🎯 On Pace", "🎯"),
-    (12, "✅ Steady Gains", "🟢"),
-    (10, "😐 Mild Disappointment", "🟡"),
-    (8, "📉 Pool Depression", "💀"),
+    (15, "🚀 Orbital Boost", "🚀"),
+    (14, "🎯 Near Target", "🎯"),
+    (12, "🌘 Running Cold", "🌘"),
+    (10, "🌫️ Lost in the Hash Fog", "🌫️"),
+    (8, "📡 Signal Fading", "📡"),
     (5, "🪦 Graveyard Shift", "⚰️"),
     (3, "💀 RNG Funeral", "🕯️"),
     (2, "🥶 Deep Freeze", "🥶"),
-    (1, "🧊 Absolute Zero", "❄️"),
+    (1, "🕯️ Last Ember", "🕯️"),
     (0, "🕳️ Event Horizon", "🌑"),
 )
 
