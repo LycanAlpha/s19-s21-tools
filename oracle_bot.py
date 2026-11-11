@@ -47,7 +47,7 @@ PRICE_CACHE_FILE = Path(os.getenv("ORACLE_BOT_PRICE_CACHE_FILE", BASE_DIR / "las
 GACHA_LOG = Path(os.getenv("ORACLE_BOT_GACHA_LOG_FILE", BASE_DIR / "gacha_history.txt"))
 
 BINANCE_URL = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
-BLOCK_API = "https://www.viabtc.com/res/pool/BTC/block?page=1&limit=100"
+BLOCK_API = "https://www.viabtc.com/res/pool/BTC/block?limit=100"
 POOL_API = "https://www.viabtc.com/res/pool/BTC/state"
 FOUNDRY_API = "https://mempool.space/api/v1/mining/pool/foundryusa"
 VIABTC_MEMPOOL_API = "https://mempool.space/api/v1/mining/pool/viabtc"
@@ -55,6 +55,8 @@ ANTPOOL_MEMPOOL_API = "https://mempool.space/api/v1/mining/pool/antpool"
 MEMPOOL_POOLS_24H_API = "https://mempool.space/api/v1/mining/pools/24h"
 MEMPOOL_HASHRATE_1M_API = "https://mempool.space/api/v1/mining/hashrate/1m"
 BLOCKS_PER_DAY_TARGET = 144
+SECONDS_PER_DAY = 86400
+ORACLE_WINDOWS = (("24h", 1), ("3d", 3), ("7d", 7))
 TRACKER_CACHE_TTL = 30
 TRACKER_CACHE = {}
 
@@ -123,10 +125,11 @@ def fetch_json_cached(url, label, timeout=10, ttl=TRACKER_CACHE_TTL):
     TRACKER_CACHE[url] = {"ts": now, "data": data}
     return data
 
-def fetch_all_data():
+def fetch_all_data(block_cutoff=None):
     cached_price = get_cached_price()
     results = {
         "blocks": [],
+        "blocks_since": None,
         "pool": {"hashrate": VIABTC_FALLBACK_HASHRATE},
         "price": cached_price,
         "errors": [],
@@ -150,8 +153,25 @@ def fetch_all_data():
         log_api_error("Pool API", exc)
 
     try:
-        block_data = fetch_json(BLOCK_API, "Blocks API", timeout=10)
-        results["blocks"] = block_data.get("data", {}).get("data", [])
+        cursor = None
+        while True:
+            url = BLOCK_API if cursor is None else f"{BLOCK_API}&cursor={cursor}"
+            page = fetch_json(url, "Blocks API", timeout=10)["data"]
+            blocks = page["data"]
+            has_next = page["has_next"]
+            oldest = min((safe_int(block["time"]) for block in blocks), default=0)
+            if not oldest and (blocks or has_next):
+                raise ValueError("Block page has missing timestamps")
+
+            results["blocks"].extend(blocks)
+            results["blocks_since"] = oldest if has_next else 0
+            if not has_next or block_cutoff is None or oldest < block_cutoff:
+                break
+
+            next_cursor = int(page["next_cursor"])
+            if next_cursor <= 0 or (cursor is not None and next_cursor >= cursor):
+                raise ValueError("Block history cursor did not advance")
+            cursor = next_cursor
     except Exception as exc:
         results["errors"].append("Blocks API")
         log_api_error("Blocks API", exc)
@@ -351,26 +371,42 @@ async def start_command(update, context):
     await update.message.reply_text(msg)
 
 async def oracle_command(update, context):
-    data = fetch_all_data()
-    blocks = data["blocks"]
+    now = int(time.time())
+    data = fetch_all_data(now - ORACLE_WINDOWS[-1][1] * SECONDS_PER_DAY)
+    block_times = [safe_int(block["time"]) for block in data["blocks"]]
+    blocks_since = data["blocks_since"]
     btc_price = data["price"]
-
-    cutoff = int(time.time()) - 86400
-    count = len([b for b in blocks if safe_int(b.get("time")) >= cutoff])
-
-    mood, emoji = next(
-        (label, icon) for minimum, label, icon in ORACLE_MOODS if count >= minimum
-    )
-
     pool_hr_eh = float(data["pool"].get("hashrate", VIABTC_FALLBACK_HASHRATE)) / 1e18
-    luck_pct = (count / VIABTC_EXPECTED_BLOCKS_24H) * 100
-    pplns_total = count * MY_SHARE_PER_BLOCK
-    daily_eur = pplns_total * btc_price * 0.92
-    perf = ((pplns_total / PPS_BASELINE) - 1) * 100
 
-    verdict = "🟢 STAY ON PPLNS" if pplns_total > PPS_BASELINE else "🔴 SWITCH TO PPS"
+    emoji = ""
+    verdict_lines = []
+    window_lines = []
+    for label, days in ORACLE_WINDOWS:
+        cutoff = now - days * SECONDS_PER_DAY
+        if blocks_since is None or blocks_since >= cutoff:
+            window_lines.append(f"**{label}:** Block history unavailable")
+            continue
+
+        count = sum(cutoff <= timestamp <= now for timestamp in block_times)
+        expected = VIABTC_EXPECTED_BLOCKS_24H * days
+        luck_pct = count / expected * 100
+        daily_btc = count * MY_SHARE_PER_BLOCK / days
+        daily_eur = daily_btc * btc_price * 0.92
+        perf = (daily_btc / PPS_BASELINE - 1) * 100
+        window_lines.append(
+            f"**{label}:** {count} / {expected:.1f} blocks · {luck_pct:.1f}% luck\n"
+            f"    {perf:+.1f}% vs PPS · {daily_eur:.2f}€/day "
+            f"({daily_eur / DR_PEPPER_EUR:.1f} Peppers/day)"
+        )
+
+        if days == 1:
+            mood, emoji = next(
+                (name, icon) for minimum, name, icon in ORACLE_MOODS if count >= minimum
+            )
+            verdict = "🟢 STAY ON PPLNS" if daily_btc > PPS_BASELINE else "🔴 SWITCH TO PPS"
+            verdict_lines.extend((f"🎭 **Mood (24h):** {mood}", f"📢 **Verdict (24h):** {verdict}"))
+
     warning_lines = []
-
     if data["price_source"] == "cache":
         warning_lines.append("⚠️ Using cached BTC price")
     if data["errors"]:
@@ -378,16 +414,13 @@ async def oracle_command(update, context):
 
     msg = (
         f"🧠 **Adaptive Mining Oracle** {emoji}\n\n"
-        f"🧱 **Blocks (24h):** {count} / {VIABTC_EXPECTED_BLOCKS_24H:.1f} expected\n"
-        f"🎯 **Pool Luck:** {luck_pct:.1f}%\n"
-        f"📡 **Hashrate:** {pool_hr_eh:.2f} EH/s\n\n"
-        f"💰 **BTC Price:** ${btc_price:,.0f}\n"
-        f"🥤 **Daily Value:** {daily_eur:.2f}€ ({daily_eur/DR_PEPPER_EUR:.1f} Peppers)\n\n"
-        f"📊 **Performance:** {perf:+.1f}% vs PPS\n"
-        f"🎭 **Mood:** {mood}\n"
-        f"📢 **Verdict:** {verdict}"
+        f"📡 **Hashrate:** {pool_hr_eh:.2f} EH/s\n"
+        f"💰 **BTC Price:** ${btc_price:,.0f}\n\n"
+        + "\n\n".join(window_lines)
     )
 
+    if verdict_lines:
+        msg += "\n\n" + "\n".join(verdict_lines)
     if warning_lines:
         msg += "\n\n" + "\n".join(warning_lines)
 
