@@ -60,7 +60,7 @@ ORACLE_WINDOWS = (("24h", 1), ("3d", 3), ("7d", 7))
 TRACKER_CACHE_TTL = 30
 TRACKER_CACHE = {}
 
-# Anomaly scale: minimum 24h block count, mood, and header emoji.
+# Anomaly scale: minimum blocks per day, mood, and header emoji.
 ORACLE_MOODS = (
     (43, "🌀 REALITY REBOOT", "💥"),
     (38, "☄️ HASH EXTINCTION EVENT", "☄️"),
@@ -379,7 +379,8 @@ async def oracle_command(update, context):
     pool_hr_eh = float(data["pool"].get("hashrate", VIABTC_FALLBACK_HASHRATE)) / 1e18
 
     emoji = ""
-    verdict_lines = []
+    verdict = None
+    mood_lines = []
     window_lines = []
     for label, days in ORACLE_WINDOWS:
         cutoff = now - days * SECONDS_PER_DAY
@@ -399,12 +400,13 @@ async def oracle_command(update, context):
             f"({daily_eur / DR_PEPPER_EUR:.1f} Peppers/day)"
         )
 
+        mood, mood_emoji = next(
+            (name, icon) for minimum, name, icon in ORACLE_MOODS if count >= minimum * days
+        )
+        mood_lines.append(f"🎭 **Mood ({label}):** {mood}")
         if days == 1:
-            mood, emoji = next(
-                (name, icon) for minimum, name, icon in ORACLE_MOODS if count >= minimum
-            )
+            emoji = mood_emoji
             verdict = "🟢 STAY ON PPLNS" if daily_btc > PPS_BASELINE else "🔴 SWITCH TO PPS"
-            verdict_lines.extend((f"🎭 **Mood (24h):** {mood}", f"📢 **Verdict (24h):** {verdict}"))
 
     warning_lines = []
     if data["price_source"] == "cache":
@@ -419,8 +421,10 @@ async def oracle_command(update, context):
         + "\n\n".join(window_lines)
     )
 
-    if verdict_lines:
-        msg += "\n\n" + "\n".join(verdict_lines)
+    if mood_lines:
+        msg += "\n\n" + "\n".join(mood_lines)
+    if verdict:
+        msg += f"\n📢 **Verdict (24h):** {verdict}"
     if warning_lines:
         msg += "\n\n" + "\n".join(warning_lines)
 
