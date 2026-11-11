@@ -37,10 +37,12 @@ logging.basicConfig(
 # ViaBTC snapshot: about 100 minutes per block at 100% luck.
 VIABTC_EXPECTED_BLOCKS_24H = 14.5
 VIABTC_FALLBACK_HASHRATE = 109.12e18
-# ViaBTC snapshot (2026-11-10): PPS+ calculator at 380 TH/s and 3% fee,
-# and mean of six recent PPLNS mining credits.
-PPS_BASELINE = 0.00015726
-MY_SHARE_PER_BLOCK = 0.00001055
+# October 2026 BTC credits scaled by daily hashrate to 344.4 TH/s
+# (average for Nov 4–10). PPS+ proxy includes small PPLNS credits on
+# Oct 22–24 and 29, the four days with 24 PPS credits each.
+PPS_BASELINE = 0.00014748
+# Mean of 125 normalized credits on eight PPLNS-only days.
+MY_SHARE_PER_BLOCK = 0.00001097
 DR_PEPPER_EUR = 1.30            
 
 PRICE_CACHE_FILE = Path(os.getenv("ORACLE_BOT_PRICE_CACHE_FILE", BASE_DIR / "last_known_price.txt"))
@@ -379,7 +381,7 @@ async def oracle_command(update, context):
     pool_hr_eh = float(data["pool"].get("hashrate", VIABTC_FALLBACK_HASHRATE)) / 1e18
 
     emoji = ""
-    verdict = None
+    weekly_summary = ""
     mood_lines = []
     window_lines = []
     for label, days in ORACLE_WINDOWS:
@@ -394,9 +396,15 @@ async def oracle_command(update, context):
         daily_btc = count * MY_SHARE_PER_BLOCK / days
         daily_eur = daily_btc * btc_price * 0.92
         perf = (daily_btc / PPS_BASELINE - 1) * 100
+        comparison = f"{perf:+.1f}% vs Oct PPS+ baseline"
+        if days == 7:
+            weekly_summary = f"📊 **7d payout estimate:** PPLNS {comparison}\n\n"
+            payout_prefix = ""
+        else:
+            payout_prefix = f"{comparison} · "
         window_lines.append(
             f"**{label}:** {count} / {expected:.1f} blocks · {luck_pct:.1f}% luck\n"
-            f"    {perf:+.1f}% vs PPS · {daily_eur:.2f}€/day "
+            f"    {payout_prefix}{daily_eur:.2f}€/day "
             f"({daily_eur / DR_PEPPER_EUR:.1f} Peppers/day)"
         )
 
@@ -406,7 +414,6 @@ async def oracle_command(update, context):
         mood_lines.append(f"🎭 **Mood ({label}):** {mood}")
         if days == 1:
             emoji = mood_emoji
-            verdict = "🟢 STAY ON PPLNS" if daily_btc > PPS_BASELINE else "🔴 SWITCH TO PPS"
 
     warning_lines = []
     if data["price_source"] == "cache":
@@ -416,6 +423,7 @@ async def oracle_command(update, context):
 
     msg = (
         f"🧠 **Adaptive Mining Oracle** {emoji}\n\n"
+        f"{weekly_summary}"
         f"📡 **Hashrate:** {pool_hr_eh:.2f} EH/s\n"
         f"💰 **BTC Price:** ${btc_price:,.0f}\n\n"
         + "\n\n".join(window_lines)
@@ -423,8 +431,6 @@ async def oracle_command(update, context):
 
     if mood_lines:
         msg += "\n\n" + "\n".join(mood_lines)
-    if verdict:
-        msg += f"\n📢 **Verdict (24h):** {verdict}"
     if warning_lines:
         msg += "\n\n" + "\n".join(warning_lines)
 
